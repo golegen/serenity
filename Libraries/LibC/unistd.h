@@ -14,6 +14,7 @@ __BEGIN_DECLS
 
 extern char** environ;
 
+void dump_backtrace();
 int fsync(int fd);
 void sysbeep();
 int systrace(pid_t);
@@ -21,11 +22,14 @@ int gettid();
 int donate(int tid);
 int create_thread(int (*)(void*), void*);
 void exit_thread(int);
-int create_shared_buffer(pid_t peer_pid, int, void** buffer);
+int create_shared_buffer(int, void** buffer);
+int share_buffer_with(int, pid_t peer_pid);
+int share_buffer_globally(int);
 void* get_shared_buffer(int shared_buffer_id);
 int release_shared_buffer(int shared_buffer_id);
 int seal_shared_buffer(int shared_buffer_id);
 int get_shared_buffer_size(int shared_buffer_id);
+int set_process_icon(int icon_id);
 int read_tsc(unsigned* lsw, unsigned* msw);
 inline int getpagesize() { return 4096; }
 pid_t fork();
@@ -55,6 +59,8 @@ pid_t tcgetpgrp(int fd);
 int tcsetpgrp(int fd, pid_t pgid);
 int creat(const char* path, mode_t);
 int open(const char* path, int options, ...);
+int creat_with_path_length(const char* path, size_t path_length, mode_t);
+int open_with_path_length(const char* path, size_t path_length, int options, mode_t);
 ssize_t read(int fd, void* buf, size_t count);
 ssize_t write(int fd, const void* buf, size_t count);
 int close(int fd);
@@ -90,6 +96,9 @@ char* getlogin();
 int chown(const char* pathname, uid_t, gid_t);
 int fchown(int fd, uid_t, gid_t);
 int ftruncate(int fd, off_t length);
+int halt();
+int reboot();
+int mount(const char* device, const char* mountpoint);
 
 enum {
     _PC_NAME_MAX,

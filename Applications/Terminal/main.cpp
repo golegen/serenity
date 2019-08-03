@@ -1,6 +1,7 @@
 #include "Terminal.h"
 #include <Kernel/KeyCode.h>
 #include <LibCore/CUserInfo.h>
+#include <LibDraw/PNGLoader.h>
 #include <LibGUI/GAction.h>
 #include <LibGUI/GApplication.h>
 #include <LibGUI/GBoxLayout.h>
@@ -98,7 +99,7 @@ GWindow* create_settings_window(Terminal& terminal, RefPtr<CConfigFile> config)
     radio_container->layout()->set_margins({ 6, 16, 6, 6 });
     radio_container->set_fill_with_background_color(true);
     radio_container->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
-    radio_container->set_preferred_size({ 100, 70 });
+    radio_container->set_preferred_size(100, 70);
 
     auto* sysbell_radio = new GRadioButton("Use (Audible) System Bell", radio_container);
     auto* visbell_radio = new GRadioButton("Use (Visual) Terminal Bell", radio_container);
@@ -113,8 +114,8 @@ GWindow* create_settings_window(Terminal& terminal, RefPtr<CConfigFile> config)
     slider_container->layout()->set_margins({ 6, 16, 6, 6 });
     slider_container->set_fill_with_background_color(true);
     slider_container->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
-    slider_container->set_preferred_size({ 100, 50 });
-    auto* slider = new GSlider(slider_container);
+    slider_container->set_preferred_size(100, 50);
+    auto* slider = new GSlider(Orientation::Horizontal, slider_container);
     slider->set_fill_with_background_color(true);
     slider->set_background_color(Color::WarmGray);
 
@@ -146,7 +147,6 @@ int main(int argc, char** argv)
     window->set_title("Terminal");
     window->set_background_color(Color::Black);
     window->set_double_buffering_enabled(false);
-    window->set_should_exit_event_loop_on_close(true);
 
     RefPtr<CConfigFile> config = CConfigFile::get_for_app("Terminal");
     Terminal terminal(ptm_fd, config);
@@ -155,7 +155,7 @@ int main(int argc, char** argv)
     window->move_to(300, 300);
     terminal.apply_size_increments_to_window(*window);
     window->show();
-    window->set_icon_path("/res/icons/16x16/app-terminal.png");
+    window->set_icon(load_png("/res/icons/16x16/app-terminal.png"));
     terminal.set_should_beep(config->read_bool_entry("Window", "AudibleBeep", false));
 
     WeakPtr<GWindow> settings_window;
@@ -185,7 +185,8 @@ int main(int argc, char** argv)
         font_menu->add_action(GAction::create(font_name, [&terminal, &config](const GAction& action) {
             terminal.set_font(GFontDatabase::the().get_by_name(action.text()));
             auto metadata = GFontDatabase::the().get_metadata_by_name(action.text());
-            config->write_entry("Text", "Font", metadata.path);
+            ASSERT(metadata.has_value());
+            config->write_entry("Text", "Font", metadata.value().path);
             config->sync();
             terminal.force_repaint();
         }));

@@ -4,15 +4,19 @@ KERNEL_OBJS = \
        init.o \
        kmalloc.o \
        StdLib.o \
+       Lock.o \
        Arch/i386/CPU.o \
        Process.o \
+       SharedBuffer.o \
        Thread.o \
-       i8253.o \
+       Arch/i386/PIT.o \
        Devices/KeyboardDevice.o \
        CMOS.o \
-       PIC.o \
+       Arch/i386/PIC.o \
        Syscall.o \
-       Devices/IDEDiskDevice.o \
+       Devices/PATAChannel.o \
+       Devices/PATADiskDevice.o \
+       Devices/FloppyDiskDevice.o \
        VM/MemoryManager.o \
        VM/Region.o \
        VM/VMObject.o \
@@ -34,7 +38,7 @@ KERNEL_OBJS = \
        DoubleBuffer.o \
        KSyms.o \
        KParams.o \
-       SharedMemory.o \
+       FileSystem/SharedMemory.o \
        FileSystem/DevPtsFS.o \
        Devices/BXVGADevice.o \
        PCI.o \
@@ -54,7 +58,7 @@ KERNEL_OBJS = \
        Devices/PCSpeaker.o \
        FileSystem/InodeFile.o \
        FileSystem/Custody.o \
-       File.o
+       FileSystem/File.o
 
 VFS_OBJS = \
     FileSystem/ProcFS.o \
@@ -70,12 +74,14 @@ VFS_OBJS = \
     Devices/DebugLogDevice.o \
     Devices/DiskPartition.o \
     Devices/MBRPartitionTable.o \
+    FileSystem/InodeWatcher.o \
     FileSystem/FileSystem.o \
     FileSystem/DiskBackedFileSystem.o \
     FileSystem/Ext2FileSystem.o \
     FileSystem/VirtualFileSystem.o \
     FileSystem/FileDescription.o \
-    FileSystem/SyntheticFileSystem.o
+    FileSystem/SyntheticFileSystem.o \
+    Devices/SB16.o
 
 AK_OBJS = \
     ../AK/String.o \
@@ -83,7 +89,6 @@ AK_OBJS = \
     ../AK/StringBuilder.o \
     ../AK/StringView.o \
     ../AK/FileSystemPath.o \
-    ../AK/StdLibExtras.o \
     ../AK/JsonObject.o \
     ../AK/JsonValue.o \
     ../AK/JsonArray.o \
@@ -97,8 +102,11 @@ OBJS = $(CXX_OBJS) Boot/boot.ao
 
 KERNEL = kernel
 CXXFLAGS += -ffreestanding -mregparm=3 -mno-80387 -mno-mmx -mno-sse -mno-sse2
-CXXFLAGS += -nostdlib
+CXXFLAGS += -nostdlib -nostdinc -nostdinc++
+CXXFLAGS += -I../Toolchain/Local/i686-pc-serenity/include/c++/8.3.0/
+CXXFLAGS += -I../Toolchain/Local/i686-pc-serenity/include/c++/8.3.0/i686-pc-serenity/
 DEFINES += -DKERNEL
+DEFINES += -DEXPENSIVE_USERSPACE_STACKS
 LDFLAGS += -Ttext 0x10000 -Wl,-T linker.ld -nostdlib
 
 all: $(KERNEL) kernel.map

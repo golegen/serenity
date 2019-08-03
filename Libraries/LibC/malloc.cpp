@@ -1,6 +1,8 @@
 #include <AK/Bitmap.h>
 #include <AK/InlineLinkedList.h>
+#include <AK/ScopedValueRollback.h>
 #include <AK/Vector.h>
+#include <LibCore/CLock.h>
 #include <assert.h>
 #include <mallocdefs.h>
 #include <serenity.h>
@@ -16,6 +18,12 @@
 #define MAGIC_PAGE_HEADER 0x42657274
 #define MAGIC_BIGALLOC_HEADER 0x42697267
 #define PAGE_ROUND_UP(x) ((((size_t)(x)) + PAGE_SIZE - 1) & (~(PAGE_SIZE - 1)))
+
+static CLock& malloc_lock()
+{
+    static u32 lock_storage[sizeof(CLock) / sizeof(u32)];
+    return *reinterpret_cast<CLock*>(&lock_storage);
+}
 
 static const int number_of_chunked_blocks_to_keep_around_per_size_class = 32;
 static const int number_of_big_blocks_to_keep_around_per_size_class = 8;
@@ -135,6 +143,8 @@ static void os_free(void* ptr, size_t size)
 
 void* malloc(size_t size)
 {
+    LOCKER(malloc_lock());
+
     if (s_log_malloc)
         dbgprintf("LibC: malloc(%u)\n", size);
 
@@ -186,7 +196,7 @@ void* malloc(size_t size)
         allocator->full_blocks.append(block);
     }
 #ifdef MALLOC_DEBUG
-    dbgprintf("LibC: allocated %p (chunk %d in block %p, size %u)\n", ptr, index, block, block->bytes_per_chunk());
+    dbgprintf("LibC: allocated %p (chunk in block %p, size %u)\n", ptr, block, block->bytes_per_chunk());
 #endif
     if (s_scrub_malloc)
         memset(ptr, MALLOC_SCRUB_BYTE, block->m_size);
@@ -195,8 +205,12 @@ void* malloc(size_t size)
 
 void free(void* ptr)
 {
+    ScopedValueRollback rollback(errno);
+
     if (!ptr)
         return;
+
+    LOCKER(malloc_lock());
 
     void* page_base = (void*)((uintptr_t)ptr & (uintptr_t)~0xfff);
     size_t magic = *(size_t*)page_base;
@@ -219,7 +233,7 @@ void free(void* ptr)
     auto* block = (ChunkedBlock*)page_base;
 
 #ifdef MALLOC_DEBUG
-    dbgprintf("LibC: freeing %p in allocator %p (size=%u, used=%u)\n", ptr, page, page->bytes_per_chunk(), page->used_chunks());
+    dbgprintf("LibC: freeing %p in allocator %p (size=%u, used=%u)\n", ptr, block, block->bytes_per_chunk(), block->used_chunks());
 #endif
 
     if (s_scrub_free)
@@ -278,6 +292,7 @@ size_t malloc_size(void* ptr)
 {
     if (!ptr)
         return 0;
+    LOCKER(malloc_lock());
     void* page_base = (void*)((uintptr_t)ptr & (uintptr_t)~0xfff);
     auto* header = (const CommonHeader*)page_base;
     auto size = header->m_size;
@@ -290,6 +305,7 @@ void* realloc(void* ptr, size_t size)
 {
     if (!ptr)
         return malloc(size);
+    LOCKER(malloc_lock());
     auto existing_allocation_size = malloc_size(ptr);
     if (size <= existing_allocation_size)
         return ptr;
@@ -301,6 +317,7 @@ void* realloc(void* ptr, size_t size)
 
 void __malloc_init()
 {
+    new (&malloc_lock()) CLock();
     if (getenv("LIBC_NOSCRUB_MALLOC"))
         s_scrub_malloc = false;
     if (getenv("LIBC_NOSCRUB_FREE"))

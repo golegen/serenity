@@ -3,6 +3,7 @@
 #include <LibGUI/GWidget.h>
 
 class GStackWidget : public GWidget {
+    C_OBJECT(GStackWidget)
 public:
     explicit GStackWidget(GWidget* parent);
     virtual ~GStackWidget() override;
@@ -10,7 +11,7 @@ public:
     GWidget* active_widget() const { return m_active_widget; }
     void set_active_widget(GWidget*);
 
-    virtual const char* class_name() const override { return "GStackWidget"; }
+    Function<void(GWidget*)> on_active_widget_change;
 
 protected:
     virtual void child_event(CChildEvent&) override;

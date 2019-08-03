@@ -16,7 +16,6 @@ int main(int argc, char** argv)
     window_rect.center_within(GDesktop::the().rect());
     window->set_resizable(false);
     window->set_rect(window_rect);
-    window->set_should_exit_event_loop_on_close(true);
 
     auto* widget = new GWidget;
     window->set_main_widget(widget);
@@ -34,7 +33,7 @@ int main(int argc, char** argv)
     label->set_font(Font::default_bold_font());
     label->set_text("Serenity Operating System");
     label->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
-    label->set_preferred_size({ 0, 11 });
+    label->set_preferred_size(0, 11);
 
     utsname uts;
     int rc = uname(&uts);
@@ -43,12 +42,12 @@ int main(int argc, char** argv)
     auto* version_label = new GLabel(widget);
     version_label->set_text(String::format("Version %s", uts.release));
     version_label->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
-    version_label->set_preferred_size({ 0, 11 });
+    version_label->set_preferred_size(0, 11);
 
     auto* quit_button = new GButton(widget);
     quit_button->set_text("Okay");
     quit_button->set_size_policy(SizePolicy::Fixed, SizePolicy::Fixed);
-    quit_button->set_preferred_size({ 100, 20 });
+    quit_button->set_preferred_size(100, 20);
     quit_button->on_click = [](GButton&) {
         GApplication::the().quit(0);
     };

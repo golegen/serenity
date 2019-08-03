@@ -6,7 +6,6 @@ AK_OBJS = \
     ../../AK/StringView.o \
     ../../AK/StringBuilder.o \
     ../../AK/FileSystemPath.o \
-    ../../AK/StdLibExtras.o \
     ../../AK/JsonValue.o \
     ../../AK/JsonArray.o \
     ../../AK/JsonObject.o \
@@ -63,7 +62,7 @@ DEFINES += -DUSERLAND -DSERENITY_LIBC_BUILD
 
 all: $(LIBRARY) startfiles
 
-startfiles:
+startfiles: $(ASM_OBJS)
 	@echo "CXX crt0.o"; $(CXX) $(CXXFLAGS) -o crt0.o -c crt0.cpp
 	cp crti.ao crti.o
 	cp crtn.ao crtn.o
@@ -81,14 +80,3 @@ $(LIBRARY): $(CPP_OBJS) $(ASM_OBJS)
 
 clean:
 	@echo "CLEAN"; rm -f $(LIBRARY) $(CPP_OBJS) $(ASM_OBJS) *.d
-
-install: $(LIBRARY) startfiles
-	mkdir -p ../../Root/usr/include
-	mkdir -p ../../Root/usr/lib
-	# Copy headers
-	rsync -r -a --include '*/' --include '*.h' --exclude '*' . ../../Root/usr/include
-	# Install the library
-	cp $(LIBRARY) ../../Root/usr/lib
-	cp crt0.o ../../Root/usr/lib/
-	cp crti.ao ../../Root/usr/lib/crti.o
-	cp crtn.ao ../../Root/usr/lib/crtn.o

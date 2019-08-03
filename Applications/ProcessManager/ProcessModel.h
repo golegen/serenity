@@ -3,7 +3,6 @@
 #include <AK/AKString.h>
 #include <AK/HashMap.h>
 #include <AK/Vector.h>
-#include <LibCore/CFile.h>
 #include <LibGUI/GModel.h>
 #include <unistd.h>
 
@@ -42,15 +41,16 @@ private:
 
     struct ProcessState {
         pid_t pid;
-        unsigned nsched;
+        unsigned times_scheduled;
         String name;
         String state;
         String user;
         String priority;
-        size_t virtual_size;
-        size_t physical_size;
-        unsigned syscalls;
+        size_t amount_virtual;
+        size_t amount_resident;
+        unsigned syscall_count;
         float cpu_percent;
+        int icon_id;
     };
 
     struct Process {
@@ -59,11 +59,10 @@ private:
     };
 
     HashMap<uid_t, String> m_usernames;
-    HashMap<pid_t, OwnPtr<Process>> m_processes;
+    HashMap<pid_t, NonnullOwnPtr<Process>> m_processes;
     Vector<pid_t> m_pids;
     RefPtr<GraphicsBitmap> m_generic_process_icon;
     RefPtr<GraphicsBitmap> m_high_priority_icon;
     RefPtr<GraphicsBitmap> m_low_priority_icon;
     RefPtr<GraphicsBitmap> m_normal_priority_icon;
-    CFile m_proc_all;
 };

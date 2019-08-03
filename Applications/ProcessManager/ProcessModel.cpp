@@ -3,25 +3,14 @@
 #include <AK/JsonArray.h>
 #include <AK/JsonObject.h>
 #include <AK/JsonValue.h>
-#include <LibCore/CFile.h>
+#include <LibC/SharedBuffer.h>
+#include <LibCore/CProcessStatisticsReader.h>
 #include <fcntl.h>
-#include <pwd.h>
 #include <stdio.h>
 
 ProcessModel::ProcessModel(GraphWidget& graph)
     : m_graph(graph)
-    , m_proc_all("/proc/all")
 {
-    if (!m_proc_all.open(CIODevice::ReadOnly)) {
-        fprintf(stderr, "ProcessManager: Failed to open /proc/all: %s\n", m_proc_all.error_string());
-        exit(1);
-    }
-
-    setpwent();
-    while (auto* passwd = getpwent())
-        m_usernames.set(passwd->pw_uid, passwd->pw_name);
-    endpwent();
-
     m_generic_process_icon = GraphicsBitmap::load_from_file("/res/icons/gear16.png");
     m_high_priority_icon = GraphicsBitmap::load_from_file("/res/icons/highpriority16.png");
     m_low_priority_icon = GraphicsBitmap::load_from_file("/res/icons/lowpriority16.png");
@@ -132,16 +121,16 @@ GVariant ProcessModel::data(const GModelIndex& index, Role role) const
             ASSERT_NOT_REACHED();
             return 3;
         case Column::Virtual:
-            return (int)process.current_state.virtual_size;
+            return (int)process.current_state.amount_virtual;
         case Column::Physical:
-            return (int)process.current_state.physical_size;
+            return (int)process.current_state.amount_resident;
         case Column::CPU:
             return process.current_state.cpu_percent;
         case Column::Name:
             return process.current_state.name;
         // FIXME: GVariant with unsigned?
         case Column::Syscalls:
-            return (int)process.current_state.syscalls;
+            return (int)process.current_state.syscall_count;
         }
         ASSERT_NOT_REACHED();
         return {};
@@ -150,6 +139,14 @@ GVariant ProcessModel::data(const GModelIndex& index, Role role) const
     if (role == Role::Display) {
         switch (index.column()) {
         case Column::Icon:
+            if (process.current_state.icon_id != -1) {
+                auto icon_buffer = SharedBuffer::create_from_shared_buffer_id(process.current_state.icon_id);
+                if (icon_buffer) {
+                    auto icon_bitmap = GraphicsBitmap::create_with_shared_buffer(GraphicsBitmap::Format::RGBA32, *icon_buffer, { 16, 16 });
+                    if (icon_bitmap)
+                        return *icon_bitmap;
+                }
+            }
             return *m_generic_process_icon;
         case Column::PID:
             return process.current_state.pid;
@@ -168,16 +165,16 @@ GVariant ProcessModel::data(const GModelIndex& index, Role role) const
                 return *m_normal_priority_icon;
             return process.current_state.priority;
         case Column::Virtual:
-            return pretty_byte_size(process.current_state.virtual_size);
+            return pretty_byte_size(process.current_state.amount_virtual);
         case Column::Physical:
-            return pretty_byte_size(process.current_state.physical_size);
+            return pretty_byte_size(process.current_state.amount_resident);
         case Column::CPU:
             return process.current_state.cpu_percent;
         case Column::Name:
             return process.current_state.name;
         // FIXME: It's weird that GVariant doesn't support unsigned ints. Should it?
         case Column::Syscalls:
-            return (int)process.current_state.syscalls;
+            return (int)process.current_state.syscall_count;
         }
     }
 
@@ -186,50 +183,39 @@ GVariant ProcessModel::data(const GModelIndex& index, Role role) const
 
 void ProcessModel::update()
 {
-    m_proc_all.seek(0);
+    auto all_processes = CProcessStatisticsReader::get_all();
 
-    unsigned last_sum_nsched = 0;
+    unsigned last_sum_times_scheduled = 0;
     for (auto& it : m_processes)
-        last_sum_nsched += it.value->current_state.nsched;
+        last_sum_times_scheduled += it.value->current_state.times_scheduled;
 
     HashTable<pid_t> live_pids;
-    unsigned sum_nsched = 0;
-    auto file_contents = m_proc_all.read_all();
-    auto json = JsonValue::from_string({ file_contents.data(), file_contents.size() });
-    json.as_array().for_each([&](auto& value) {
-        const JsonObject& process_object = value.as_object();
-        pid_t pid = process_object.get("pid").to_u32();
-        unsigned nsched = process_object.get("times_scheduled").to_u32();
+    unsigned sum_times_scheduled = 0;
+    for (auto& it : all_processes) {
         ProcessState state;
-        state.pid = pid;
-        state.nsched = nsched;
-        unsigned uid = process_object.get("uid").to_u32();
+        state.pid = it.value.pid;
+        state.times_scheduled = it.value.times_scheduled;
+        state.user = it.value.username;
+        state.priority = it.value.priority;
+        state.syscall_count = it.value.syscall_count;
+        state.state = it.value.state;
+        state.name = it.value.name;
+        state.amount_virtual = it.value.amount_virtual;
+        state.amount_resident = it.value.amount_resident;
+        state.icon_id = it.value.icon_id;
+        sum_times_scheduled += it.value.times_scheduled;
         {
-            auto it = m_usernames.find((uid_t)uid);
-            if (it != m_usernames.end())
-                state.user = (*it).value;
-            else
-                state.user = String::number(uid);
+            auto pit = m_processes.find(it.value.pid);
+            if (pit == m_processes.end())
+                m_processes.set(it.value.pid, make<Process>());
         }
-        state.priority = process_object.get("priority").to_string();
-        state.syscalls = process_object.get("syscall_count").to_u32();
-        state.state = process_object.get("state").to_string();
-        state.name = process_object.get("name").to_string();
-        state.virtual_size = process_object.get("amount_virtual").to_u32();
-        state.physical_size = process_object.get("amount_resident").to_u32();
-        sum_nsched += nsched;
-        {
-            auto it = m_processes.find(pid);
-            if (it == m_processes.end())
-                m_processes.set(pid, make<Process>());
-        }
-        auto it = m_processes.find(pid);
-        ASSERT(it != m_processes.end());
-        (*it).value->previous_state = (*it).value->current_state;
-        (*it).value->current_state = state;
+        auto pit = m_processes.find(it.value.pid);
+        ASSERT(pit != m_processes.end());
+        (*pit).value->previous_state = (*pit).value->current_state;
+        (*pit).value->current_state = state;
 
-        live_pids.set(pid);
-    });
+        live_pids.set(it.value.pid);
+    }
 
     m_pids.clear();
     float total_cpu_percent = 0;
@@ -240,8 +226,8 @@ void ProcessModel::update()
             continue;
         }
         auto& process = *it.value;
-        u32 nsched_diff = process.current_state.nsched - process.previous_state.nsched;
-        process.current_state.cpu_percent = ((float)nsched_diff * 100) / (float)(sum_nsched - last_sum_nsched);
+        u32 times_scheduled_diff = process.current_state.times_scheduled - process.previous_state.times_scheduled;
+        process.current_state.cpu_percent = ((float)times_scheduled_diff * 100) / (float)(sum_times_scheduled - last_sum_times_scheduled);
         if (it.key != 0) {
             total_cpu_percent += process.current_state.cpu_percent;
             m_pids.append(it.key);

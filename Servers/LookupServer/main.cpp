@@ -8,6 +8,7 @@
 #include <Kernel/Net/IPv4.h>
 #include <LibCore/CConfigFile.h>
 #include <LibCore/CFile.h>
+#include <LibCore/CSyscallUtils.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <stdio.h>
@@ -108,7 +109,7 @@ int main(int argc, char** argv)
         fd_set rfds;
         FD_ZERO(&rfds);
         FD_SET(server_fd, &rfds);
-        rc = select(server_fd + 1, &rfds, nullptr, nullptr, nullptr);
+        rc = CSyscallUtils::safe_syscall(select, server_fd + 1, &rfds, nullptr, nullptr, nullptr);
         if (rc < 1) {
             perror("select");
             return 1;
@@ -156,9 +157,9 @@ int main(int argc, char** argv)
         for (auto& key : dns_custom_hostnames.keys()) {
             dbgprintf("Known hostname: '%s'\n", key.characters());
         }
-        if (dns_custom_hostnames.contains(hostname)) {
-            responses.append(dns_custom_hostnames.get(hostname));
-            dbgprintf("LookupServer: Found preconfigured host (from /etc/hosts): %s\n", responses[0].characters());
+        if (auto known_host = dns_custom_hostnames.get(hostname)) {
+            responses.append(known_host.value());
+            dbg() << "LookupServer: Found preconfigured host (from /etc/hosts): " << known_host.value();
         } else if (!hostname.is_empty()) {
             bool did_timeout;
             int retries = 3;

@@ -89,7 +89,7 @@ Direction VBWidget::grabber_at(const Point& position) const
 void VBWidget::for_each_property(Function<void(VBProperty&)> callback)
 {
     for (auto& it : m_properties) {
-        callback(*it);
+        callback(it);
     }
 }
 
@@ -107,6 +107,8 @@ void VBWidget::add_property(const String& name, Function<GVariant(const GWidget&
 
 void VBWidget::setup_properties()
 {
+    VB_ADD_PROPERTY(CObject, "name", name, set_name, string);
+
     VB_ADD_PROPERTY(GWidget, "width", width, set_width, int);
     VB_ADD_PROPERTY(GWidget, "height", height, set_height, int);
     VB_ADD_PROPERTY(GWidget, "x", x, set_x, int);
@@ -174,8 +176,8 @@ void VBWidget::setup_properties()
 void VBWidget::synchronize_properties()
 {
     for (auto& prop : m_properties) {
-        if (prop->m_getter)
-            prop->m_value = prop->m_getter(*gwidget());
+        if (prop.m_getter)
+            prop.m_value = prop.m_getter(*gwidget());
     }
 
     m_property_model->update();
@@ -184,11 +186,11 @@ void VBWidget::synchronize_properties()
 VBProperty& VBWidget::property(const String& name)
 {
     for (auto& prop : m_properties) {
-        if (prop->name() == name)
-            return *prop;
+        if (prop.name() == name)
+            return prop;
     }
     m_properties.append(make<VBProperty>(*this, name, GVariant()));
-    return *m_properties.last();
+    return m_properties.last();
 }
 
 void VBWidget::property_did_change()

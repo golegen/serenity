@@ -1,22 +1,26 @@
+#include "Devices/PATADiskDevice.h"
 #include "KSyms.h"
-#include "PIC.h"
 #include "Process.h"
 #include "RTC.h"
 #include "Scheduler.h"
-#include "i8253.h"
 #include "kmalloc.h"
 #include <AK/Types.h>
 #include <Kernel/Arch/i386/CPU.h>
+#include <Kernel/Arch/i386/PIC.h>
+#include <Kernel/Arch/i386/PIT.h>
+#include <Kernel/CMOS.h>
 #include <Kernel/Devices/BXVGADevice.h>
 #include <Kernel/Devices/DebugLogDevice.h>
 #include <Kernel/Devices/DiskPartition.h>
+#include <Kernel/Devices/FloppyDiskDevice.h>
 #include <Kernel/Devices/FullDevice.h>
-#include <Kernel/Devices/IDEDiskDevice.h>
 #include <Kernel/Devices/KeyboardDevice.h>
 #include <Kernel/Devices/MBRPartitionTable.h>
 #include <Kernel/Devices/NullDevice.h>
+#include <Kernel/Devices/PATAChannel.h>
 #include <Kernel/Devices/PS2MouseDevice.h>
 #include <Kernel/Devices/RandomDevice.h>
+#include <Kernel/Devices/SB16.h>
 #include <Kernel/Devices/SerialDevice.h>
 #include <Kernel/Devices/ZeroDevice.h>
 #include <Kernel/FileSystem/DevPtsFS.h>
@@ -31,14 +35,13 @@
 #include <Kernel/TTY/VirtualConsole.h>
 #include <Kernel/VM/MemoryManager.h>
 
-//#define STRESS_TEST_SPAWNING
-
 VirtualConsole* tty0;
 VirtualConsole* tty1;
 VirtualConsole* tty2;
 VirtualConsole* tty3;
 KeyboardDevice* keyboard;
 PS2MouseDevice* ps2mouse;
+SB16* sb16;
 DebugLogDevice* dev_debuglog;
 NullDevice* dev_null;
 SerialDevice* ttyS0;
@@ -46,24 +49,6 @@ SerialDevice* ttyS1;
 SerialDevice* ttyS2;
 SerialDevice* ttyS3;
 VFS* vfs;
-
-#ifdef STRESS_TEST_SPAWNING
-[[noreturn]] static void spawn_stress()
-{
-    u32 last_sum_alloc = sum_alloc;
-
-    for (unsigned i = 0; i < 10000; ++i) {
-        int error;
-        Process::create_user_process("/bin/true", (uid_t)100, (gid_t)100, (pid_t)0, error, {}, {}, tty0);
-        dbgprintf("malloc stats: alloc:%u free:%u eternal:%u !delta:%u\n", sum_alloc, sum_free, kmalloc_sum_eternal, sum_alloc - last_sum_alloc);
-        last_sum_alloc = sum_alloc;
-        sleep(60);
-    }
-    for (;;) {
-        asm volatile("hlt");
-    }
-}
-#endif
 
 [[noreturn]] static void init_stage2()
 {
@@ -84,9 +69,8 @@ VFS* vfs;
         hang();
     }
 
-    auto dev_hd0 = IDEDiskDevice::create();
-
-    NonnullRefPtr<DiskDevice> root_dev = dev_hd0.copy_ref();
+    auto pata0 = PATAChannel::create(PATAChannel::ChannelType::Primary);
+    NonnullRefPtr<DiskDevice> root_dev = *pata0->master_device();
 
     root = root.substring(strlen("/dev/hda"), root.length() - strlen("/dev/hda"));
 
@@ -104,7 +88,7 @@ VFS* vfs;
             hang();
         }
 
-        MBRPartitionTable mbr(root_dev.copy_ref());
+        MBRPartitionTable mbr(root_dev);
         if (!mbr.initialize()) {
             kprintf("init_stage2: couldn't read MBR from disk\n");
             hang();
@@ -119,13 +103,13 @@ VFS* vfs;
         root_dev = *partition;
     }
 
-    auto e2fs = Ext2FS::create(root_dev.copy_ref());
+    auto e2fs = Ext2FS::create(root_dev);
     if (!e2fs->initialize()) {
         kprintf("init_stage2: couldn't open root filesystem\n");
         hang();
     }
 
-    vfs->mount_root(e2fs.copy_ref());
+    vfs->mount_root(e2fs);
 
     dbgprintf("Load ksyms\n");
     load_ksyms();
@@ -133,6 +117,24 @@ VFS* vfs;
 
     vfs->mount(ProcFS::the(), "/proc");
     vfs->mount(DevPtsFS::the(), "/dev/pts");
+
+    // Now, detect whether or not there are actually any floppy disks attached to the system
+    u8 detect = CMOS::read(0x10);
+    RefPtr<FloppyDiskDevice> fd0;
+    RefPtr<FloppyDiskDevice> fd1;
+    if ((detect >> 4) & 0x4) {
+        fd0 = FloppyDiskDevice::create(FloppyDiskDevice::DriveType::Master);
+        kprintf("fd0 is 1.44MB floppy drive\n");
+    } else {
+        kprintf("fd0 type unsupported! Type == 0x%x\n", detect >> 4);
+    }
+
+    if (detect & 0x0f) {
+        fd1 = FloppyDiskDevice::create(FloppyDiskDevice::DriveType::Slave);
+        kprintf("fd1 is 1.44MB floppy drive");
+    } else {
+        kprintf("fd1 type unsupported! Type == 0x%x\n", detect & 0x0f);
+    }
 
     int error;
 
@@ -142,10 +144,6 @@ VFS* vfs;
         hang();
     }
     system_server_process->set_priority(Process::HighPriority);
-
-#ifdef STRESS_TEST_SPAWNING
-    Process::create_kernel_process("spawn_stress", spawn_stress);
-#endif
 
     current->process().sys$exit(0);
     ASSERT_NOT_REACHED();
@@ -177,6 +175,7 @@ extern "C" [[noreturn]] void init()
 
     keyboard = new KeyboardDevice;
     ps2mouse = new PS2MouseDevice;
+    sb16 = new SB16;
     dev_null = new NullDevice;
     ttyS0 = new SerialDevice(SERIAL_COM1_ADDR, 64);
     ttyS1 = new SerialDevice(SERIAL_COM2_ADDR, 65);
@@ -219,8 +218,7 @@ extern "C" [[noreturn]] void init()
         current->process().set_priority(Process::LowPriority);
         for (;;) {
             Thread::finalize_dying_threads();
-            current->block(Thread::BlockedLurking);
-            Scheduler::yield();
+            (void)current->block<Thread::SemiPermanentBlocker>(Thread::SemiPermanentBlocker::Reason::Lurking);
         }
     });
     Process::create_kernel_process("NetworkTask", NetworkTask_main);

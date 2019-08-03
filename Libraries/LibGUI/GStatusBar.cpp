@@ -3,13 +3,13 @@
 #include <LibGUI/GPainter.h>
 #include <LibGUI/GResizeCorner.h>
 #include <LibGUI/GStatusBar.h>
-#include <SharedGraphics/StylePainter.h>
+#include <LibDraw/StylePainter.h>
 
 GStatusBar::GStatusBar(GWidget* parent)
     : GWidget(parent)
 {
     set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
-    set_preferred_size({ 0, 20 });
+    set_preferred_size(0, 20);
     set_layout(make<GBoxLayout>(Orientation::Horizontal));
     layout()->set_margins({ 2, 2, 2, 2 });
     layout()->set_spacing(2);

@@ -8,7 +8,7 @@
 #include <LibGUI/GLayout.h>
 #include <LibGUI/GMenu.h>
 #include <LibGUI/GPainter.h>
-#include <SharedGraphics/GraphicsBitmap.h>
+#include <LibDraw/GraphicsBitmap.h>
 #include <unistd.h>
 
 GWidget::GWidget(GWidget* parent)
@@ -371,12 +371,12 @@ void GWidget::set_focus(bool focus)
     }
 }
 
-void GWidget::set_font(RefPtr<Font>&& font)
+void GWidget::set_font(Font* font)
 {
     if (!font)
         m_font = Font::default_font();
     else
-        m_font = move(font);
+        m_font = font;
     update();
 }
 
@@ -402,6 +402,14 @@ void GWidget::set_preferred_size(const Size& size)
         return;
     m_preferred_size = size;
     invalidate_layout();
+}
+
+void GWidget::set_size_policy(Orientation orientation, SizePolicy policy)
+{
+    if (orientation == Orientation::Horizontal)
+        set_size_policy(policy, m_vertical_size_policy);
+    else
+        set_size_policy(m_horizontal_size_policy, policy);
 }
 
 void GWidget::set_size_policy(SizePolicy horizontal_policy, SizePolicy vertical_policy)

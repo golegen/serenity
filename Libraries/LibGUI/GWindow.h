@@ -5,8 +5,8 @@
 #include <AK/WeakPtr.h>
 #include <LibCore/CObject.h>
 #include <LibGUI/GWindowType.h>
-#include <SharedGraphics/GraphicsBitmap.h>
-#include <SharedGraphics/Rect.h>
+#include <LibDraw/GraphicsBitmap.h>
+#include <LibDraw/Rect.h>
 
 class GWidget;
 class GWMEvent;
@@ -22,6 +22,7 @@ enum class GStandardCursor {
 };
 
 class GWindow : public CObject {
+    C_OBJECT(GWindow)
 public:
     GWindow(CObject* parent = nullptr);
     virtual ~GWindow() override;
@@ -81,7 +82,7 @@ public:
 
     void show();
     void hide();
-    void close();
+    virtual void close();
     void move_to_front();
 
     void start_wm_resize();
@@ -104,9 +105,6 @@ public:
     GWidget* automatic_cursor_tracking_widget() { return m_automatic_cursor_tracking_widget.ptr(); }
     const GWidget* automatic_cursor_tracking_widget() const { return m_automatic_cursor_tracking_widget.ptr(); }
 
-    bool should_exit_event_loop_on_close() const { return m_should_exit_app_on_close; }
-    void set_should_exit_event_loop_on_close(bool b) { m_should_exit_app_on_close = b; }
-
     GWidget* hovered_widget() { return m_hovered_widget.ptr(); }
     const GWidget* hovered_widget() const { return m_hovered_widget.ptr(); }
     void set_hovered_widget(GWidget*);
@@ -121,12 +119,11 @@ public:
 
     void set_override_cursor(GStandardCursor);
 
-    String icon_path() const { return m_icon_path; }
-    void set_icon_path(const StringView&);
+    void set_icon(const GraphicsBitmap*);
+    void apply_icon();
+    const GraphicsBitmap* icon() const { return m_icon.ptr(); }
 
     Vector<GWidget*> focusable_widgets() const;
-
-    virtual const char* class_name() const override { return "GWindow"; }
 
 protected:
     virtual void wm_event(GWMEvent&);
@@ -139,11 +136,13 @@ private:
     void collect_keyboard_activation_targets();
 
     NonnullRefPtr<GraphicsBitmap> create_backing_bitmap(const Size&);
+    NonnullRefPtr<GraphicsBitmap> create_shared_bitmap(GraphicsBitmap::Format, const Size&);
     void set_current_backing_bitmap(GraphicsBitmap&, bool flush_immediately = false);
     void flip(const Vector<Rect, 32>& dirty_rects);
 
     RefPtr<GraphicsBitmap> m_front_bitmap;
     RefPtr<GraphicsBitmap> m_back_bitmap;
+    RefPtr<GraphicsBitmap> m_icon;
     int m_window_id { 0 };
     float m_opacity_when_windowless { 1.0f };
     GWidget* m_main_widget { nullptr };
@@ -153,14 +152,12 @@ private:
     WeakPtr<GWidget> m_hovered_widget;
     Rect m_rect_when_windowless;
     String m_title_when_windowless;
-    String m_icon_path;
     Vector<Rect, 32> m_pending_paint_event_rects;
     Size m_size_increment;
     Size m_base_size;
     Color m_background_color { Color::WarmGray };
     GWindowType m_window_type { GWindowType::Normal };
     bool m_is_active { false };
-    bool m_should_exit_app_on_close { false };
     bool m_destroy_on_close { true };
     bool m_has_alpha_channel { false };
     bool m_double_buffering_enabled { true };

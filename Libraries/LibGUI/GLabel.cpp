@@ -1,6 +1,6 @@
 #include "GLabel.h"
 #include <LibGUI/GPainter.h>
-#include <SharedGraphics/GraphicsBitmap.h>
+#include <LibDraw/GraphicsBitmap.h>
 
 GLabel::GLabel(GWidget* parent)
     : GFrame(parent)
@@ -17,9 +17,9 @@ GLabel::~GLabel()
 {
 }
 
-void GLabel::set_icon(RefPtr<GraphicsBitmap>&& icon)
+void GLabel::set_icon(GraphicsBitmap* icon)
 {
-    m_icon = move(icon);
+    m_icon = icon;
 }
 
 void GLabel::set_text(const StringView& text)
@@ -65,5 +65,5 @@ void GLabel::paint_event(GPaintEvent& event)
 void GLabel::size_to_fit()
 {
     set_size_policy(SizePolicy::Fixed, SizePolicy::Fill);
-    set_preferred_size({ font().width(m_text), 0 });
+    set_preferred_size(font().width(m_text), 0);
 }

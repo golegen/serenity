@@ -93,7 +93,7 @@ VBWidget* VBForm::widget_at(const Point& position)
     auto* gwidget = child_at(position);
     if (!gwidget)
         return nullptr;
-    return m_gwidget_map.get(gwidget);
+    return m_gwidget_map.get(gwidget).value_or(nullptr);
 }
 
 void VBForm::grabber_mousedown_event(GMouseEvent& event, Direction grabber)
@@ -294,7 +294,7 @@ void VBForm::load_from_file(const String& path)
 {
     CFile file(path);
     if (!file.open(CIODevice::ReadOnly)) {
-        GMessageBox::show(String::format("Could not open '%s' for reading", path.characters()), "Error", GMessageBox::Type::Error, window());
+        GMessageBox::show(String::format("Could not open '%s' for reading", path.characters()), "Error", GMessageBox::Type::Error, GMessageBox::InputType::OK, window());
         return;
     }
 
@@ -302,7 +302,7 @@ void VBForm::load_from_file(const String& path)
     auto form_json = JsonValue::from_string(file_contents);
 
     if (!form_json.is_object()) {
-        GMessageBox::show(String::format("Could not parse '%s'", path.characters()), "Error", GMessageBox::Type::Error, window());
+        GMessageBox::show(String::format("Could not parse '%s'", path.characters()), "Error", GMessageBox::Type::Error, GMessageBox::InputType::OK, window());
         return;
     }
 
@@ -329,7 +329,7 @@ void VBForm::write_to_file(const String& path)
 {
     CFile file(path);
     if (!file.open(CIODevice::WriteOnly)) {
-        GMessageBox::show(String::format("Could not open '%s' for writing", path.characters()), "Error", GMessageBox::Type::Error, window());
+        GMessageBox::show(String::format("Could not open '%s' for writing", path.characters()), "Error", GMessageBox::Type::Error, GMessageBox::InputType::OK, window());
         return;
     }
 

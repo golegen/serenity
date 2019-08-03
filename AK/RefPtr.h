@@ -2,9 +2,13 @@
 
 #include <AK/LogStream.h>
 #include <AK/NonnullRefPtr.h>
+#include <AK/StdLibExtras.h>
 #include <AK/Types.h>
 
 namespace AK {
+
+template<typename T>
+class OwnPtr;
 
 template<typename T>
 class RefPtr {
@@ -38,18 +42,28 @@ public:
         : m_ptr(&object)
     {
     }
-    RefPtr(RefPtr& other)
-        : m_ptr(other.copy_ref().leak_ref())
-    {
-    }
     RefPtr(RefPtr&& other)
         : m_ptr(other.leak_ref())
     {
+    }
+    RefPtr(const NonnullRefPtr<T>& other)
+        : m_ptr(const_cast<T*>(other.ptr()))
+    {
+        ASSERT(m_ptr);
+        m_ptr->ref();
+    }
+    template<typename U>
+    RefPtr(const NonnullRefPtr<U>& other)
+        : m_ptr(static_cast<T*>(const_cast<U*>(other.ptr())))
+    {
+        ASSERT(m_ptr);
+        m_ptr->ref();
     }
     template<typename U>
     RefPtr(NonnullRefPtr<U>&& other)
         : m_ptr(static_cast<T*>(&other.leak_ref()))
     {
+        ASSERT(m_ptr);
     }
     template<typename U>
     RefPtr(RefPtr<U>&& other)
@@ -57,13 +71,15 @@ public:
     {
     }
     RefPtr(const RefPtr& other)
-        : m_ptr(const_cast<RefPtr&>(other).copy_ref().leak_ref())
+        : m_ptr(const_cast<T*>(other.ptr()))
     {
+        ref_if_not_null(m_ptr);
     }
     template<typename U>
     RefPtr(const RefPtr<U>& other)
-        : m_ptr(const_cast<RefPtr<U>&>(other).copy_ref().leak_ref())
+        : m_ptr(static_cast<T*>(const_cast<U*>(other.ptr())))
     {
+        ref_if_not_null(m_ptr);
     }
     ~RefPtr()
     {
@@ -77,69 +93,84 @@ public:
     }
     RefPtr(std::nullptr_t) {}
 
+    template<typename U>
+    RefPtr(const OwnPtr<U>&) = delete;
+    template<typename U>
+    RefPtr& operator=(const OwnPtr<U>&) = delete;
+
+    template<typename U>
+    void swap(RefPtr<U>& other)
+    {
+        ::swap(m_ptr, other.m_ptr);
+    }
+
     RefPtr& operator=(RefPtr&& other)
     {
-        if (this != &other) {
-            deref_if_not_null(m_ptr);
-            m_ptr = other.leak_ref();
-        }
+        RefPtr tmp = move(other);
+        swap(tmp);
         return *this;
     }
 
     template<typename U>
     RefPtr& operator=(RefPtr<U>&& other)
     {
-        if (this != static_cast<void*>(&other)) {
-            deref_if_not_null(m_ptr);
-            m_ptr = other.leak_ref();
-        }
+        RefPtr tmp = move(other);
+        swap(tmp);
         return *this;
     }
 
     template<typename U>
     RefPtr& operator=(NonnullRefPtr<U>&& other)
     {
-        deref_if_not_null(m_ptr);
-        m_ptr = &other.leak_ref();
+        RefPtr tmp = move(other);
+        swap(tmp);
+        ASSERT(m_ptr);
+        return *this;
+    }
+
+    RefPtr& operator=(const NonnullRefPtr<T>& other)
+    {
+        RefPtr tmp = other;
+        swap(tmp);
+        ASSERT(m_ptr);
         return *this;
     }
 
     template<typename U>
     RefPtr& operator=(const NonnullRefPtr<U>& other)
     {
-        if (m_ptr != other.ptr())
-            deref_if_not_null(m_ptr);
-        m_ptr = const_cast<T*>(other.ptr());
+        RefPtr tmp = other;
+        swap(tmp);
         ASSERT(m_ptr);
-        ref_if_not_null(m_ptr);
+        return *this;
+    }
+
+    RefPtr& operator=(const RefPtr& other)
+    {
+        RefPtr tmp = other;
+        swap(tmp);
         return *this;
     }
 
     template<typename U>
     RefPtr& operator=(const RefPtr<U>& other)
     {
-        if (m_ptr != other.ptr())
-            deref_if_not_null(m_ptr);
-        m_ptr = const_cast<T*>(other.ptr());
-        ref_if_not_null(m_ptr);
+        RefPtr tmp = other;
+        swap(tmp);
         return *this;
     }
 
     RefPtr& operator=(const T* ptr)
     {
-        if (m_ptr != ptr)
-            deref_if_not_null(m_ptr);
-        m_ptr = const_cast<T*>(ptr);
-        ref_if_not_null(m_ptr);
+        RefPtr tmp = ptr;
+        swap(tmp);
         return *this;
     }
 
     RefPtr& operator=(const T& object)
     {
-        if (m_ptr != &object)
-            deref_if_not_null(m_ptr);
-        m_ptr = const_cast<T*>(&object);
-        ref_if_not_null(m_ptr);
+        RefPtr tmp = object;
+        swap(tmp);
         return *this;
     }
 
@@ -147,11 +178,6 @@ public:
     {
         clear();
         return *this;
-    }
-
-    RefPtr copy_ref() const
-    {
-        return RefPtr(m_ptr);
     }
 
     void clear()
@@ -162,21 +188,37 @@ public:
 
     bool operator!() const { return !m_ptr; }
 
-    T* leak_ref()
+    [[nodiscard]] T* leak_ref()
     {
-        T* leakedPtr = m_ptr;
-        m_ptr = nullptr;
-        return leakedPtr;
+        return exchange(m_ptr, nullptr);
     }
 
     T* ptr() { return m_ptr; }
     const T* ptr() const { return m_ptr; }
 
-    T* operator->() { return m_ptr; }
-    const T* operator->() const { return m_ptr; }
+    T* operator->()
+    {
+        ASSERT(m_ptr);
+        return m_ptr;
+    }
 
-    T& operator*() { return *m_ptr; }
-    const T& operator*() const { return *m_ptr; }
+    const T* operator->() const
+    {
+        ASSERT(m_ptr);
+        return m_ptr;
+    }
+
+    T& operator*()
+    {
+        ASSERT(m_ptr);
+        return *m_ptr;
+    }
+
+    const T& operator*() const
+    {
+        ASSERT(m_ptr);
+        return *m_ptr;
+    }
 
     operator const T*() const { return m_ptr; }
     operator T*() { return m_ptr; }

@@ -1,14 +1,14 @@
 #pragma once
 
 #include <AK/AKString.h>
+#include <AK/NonnullOwnPtrVector.h>
 #include <AK/Types.h>
-#include <AK/Vector.h>
 #include <LibCore/CConfigFile.h>
 #include <LibCore/CNotifier.h>
 #include <LibCore/CTimer.h>
+#include <LibDraw/GraphicsBitmap.h>
+#include <LibDraw/Rect.h>
 #include <LibGUI/GFrame.h>
-#include <SharedGraphics/GraphicsBitmap.h>
-#include <SharedGraphics/Rect.h>
 
 class Font;
 
@@ -56,6 +56,7 @@ private:
 };
 
 class Terminal final : public GFrame {
+    C_OBJECT(Terminal)
 public:
     explicit Terminal(int ptm_fd, RefPtr<CConfigFile> config);
     virtual ~Terminal() override;
@@ -92,7 +93,6 @@ private:
     virtual void mousedown_event(GMouseEvent&) override;
     virtual void mousemove_event(GMouseEvent&) override;
     virtual void mouseup_event(GMouseEvent&) override;
-    virtual const char* class_name() const override { return "Terminal"; }
 
     void scroll_up();
     void scroll_down();
@@ -193,15 +193,15 @@ private:
     Line& line(size_t index)
     {
         ASSERT(index < m_rows);
-        return *m_lines[index];
+        return m_lines[index];
     }
     const Line& line(size_t index) const
     {
         ASSERT(index < m_rows);
-        return *m_lines[index];
+        return m_lines[index];
     }
 
-    Vector<OwnPtr<Line>> m_lines;
+    NonnullOwnPtrVector<Line> m_lines;
 
     BufferPosition m_selection_start;
     BufferPosition m_selection_end;
@@ -212,10 +212,10 @@ private:
     u16 m_columns { 0 };
     u16 m_rows { 0 };
 
-    u8 m_cursor_row { 0 };
-    u8 m_cursor_column { 0 };
-    u8 m_saved_cursor_row { 0 };
-    u8 m_saved_cursor_column { 0 };
+    u16 m_cursor_row { 0 };
+    u16 m_cursor_column { 0 };
+    u16 m_saved_cursor_row { 0 };
+    u16 m_saved_cursor_column { 0 };
     bool m_stomp { false };
 
     bool m_should_beep { false };

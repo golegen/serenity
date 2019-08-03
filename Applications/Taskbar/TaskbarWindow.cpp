@@ -1,5 +1,6 @@
 #include "TaskbarWindow.h"
 #include "TaskbarButton.h"
+#include <LibC/SharedBuffer.h>
 #include <LibGUI/GBoxLayout.h>
 #include <LibGUI/GButton.h>
 #include <LibGUI/GDesktop.h>
@@ -15,7 +16,6 @@ TaskbarWindow::TaskbarWindow()
 {
     set_window_type(GWindowType::Taskbar);
     set_title("Taskbar");
-    set_should_exit_event_loop_on_close(true);
 
     on_screen_rect_change(GDesktop::the().rect());
 
@@ -50,7 +50,7 @@ GButton* TaskbarWindow::create_button(const WindowIdentifier& identifier)
 {
     auto* button = new TaskbarButton(identifier, main_widget());
     button->set_size_policy(SizePolicy::Fixed, SizePolicy::Fixed);
-    button->set_preferred_size({ 140, 22 });
+    button->set_preferred_size(140, 22);
     button->set_checkable(true);
     button->set_text_alignment(TextAlignment::CenterLeft);
     return button;
@@ -86,17 +86,19 @@ void TaskbarWindow::wm_event(GWMEvent& event)
 #endif
         break;
     }
-    case GEvent::WM_WindowIconChanged: {
-        auto& changed_event = static_cast<GWMWindowIconChangedEvent&>(event);
+
+    case GEvent::WM_WindowIconBitmapChanged: {
+        auto& changed_event = static_cast<GWMWindowIconBitmapChangedEvent&>(event);
 #ifdef EVENT_DEBUG
-        dbgprintf("WM_WindowIconChanged: client_id=%d, window_id=%d, icon_path=%s\n",
+        dbgprintf("WM_WindowIconBitmapChanged: client_id=%d, window_id=%d, icon_buffer_id=%d\n",
             changed_event.client_id(),
             changed_event.window_id(),
-            changed_event.icon_path().characters());
+            changed_event.icon_buffer_id());
 #endif
         if (auto* window = WindowList::the().window(identifier)) {
-            window->set_icon_path(changed_event.icon_path());
-            window->button()->set_icon(window->icon());
+            auto buffer = SharedBuffer::create_from_shared_buffer_id(changed_event.icon_buffer_id());
+            ASSERT(buffer);
+            window->button()->set_icon(GraphicsBitmap::create_with_shared_buffer(GraphicsBitmap::Format::RGBA32, *buffer, changed_event.icon_size()));
         }
         break;
     }

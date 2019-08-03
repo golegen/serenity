@@ -3,9 +3,9 @@
 #include <AK/AKString.h>
 #include <AK/InlineLinkedList.h>
 #include <LibCore/CObject.h>
-#include <SharedGraphics/DisjointRectSet.h>
-#include <SharedGraphics/GraphicsBitmap.h>
-#include <SharedGraphics/Rect.h>
+#include <LibDraw/DisjointRectSet.h>
+#include <LibDraw/GraphicsBitmap.h>
+#include <LibDraw/Rect.h>
 #include <WindowServer/WSWindowFrame.h>
 #include <WindowServer/WSWindowType.h>
 
@@ -16,6 +16,7 @@ class WSMouseEvent;
 
 class WSWindow final : public CObject
     , public InlineLinkedListNode<WSWindow> {
+    C_OBJECT(WSWindow)
 public:
     WSWindow(WSClientConnection&, WSWindowType, int window_id, bool modal, bool resizable, bool fullscreen);
     WSWindow(CObject&, WSWindowType);
@@ -40,6 +41,11 @@ public:
 
     bool show_titlebar() const { return m_show_titlebar; }
     void set_show_titlebar(bool show) { m_show_titlebar = show; }
+
+    bool is_movable() const
+    {
+        return m_type == WSWindowType::Normal || m_type == WSWindowType::Launcher;
+    }
 
     WSWindowFrame& frame() { return m_frame; }
     const WSWindowFrame& frame() const { return m_frame; }
@@ -128,12 +134,8 @@ public:
     void set_base_size(const Size& size) { m_base_size = size; }
 
     const GraphicsBitmap& icon() const { return *m_icon; }
-    String icon_path() const { return m_icon_path; }
-    void set_icon(const String& path, NonnullRefPtr<GraphicsBitmap>&& icon)
-    {
-        m_icon_path = path;
-        m_icon = move(icon);
-    }
+    void set_icon(NonnullRefPtr<GraphicsBitmap>&& icon) { m_icon = move(icon); }
+
     void set_default_icon();
 
     const WSCursor* override_cursor() const { return m_override_cursor.ptr(); }
@@ -173,7 +175,6 @@ private:
     Size m_size_increment;
     Size m_base_size;
     NonnullRefPtr<GraphicsBitmap> m_icon;
-    String m_icon_path;
     RefPtr<WSCursor> m_override_cursor;
     WSWindowFrame m_frame;
     Color m_background_color { Color::WarmGray };

@@ -2,28 +2,28 @@
 
 #include <AK/ByteBuffer.h>
 #include <LibCore/CEventLoop.h>
+#include <LibCore/CLocalServer.h>
+#include <LibCore/CNotifier.h>
 
 class WSClientConnection;
 struct WSAPI_ClientMessage;
 
-class WSEventLoop : public CEventLoop {
+class WSEventLoop {
 public:
     WSEventLoop();
-    virtual ~WSEventLoop() override;
+    virtual ~WSEventLoop();
 
-    static WSEventLoop& the() { return static_cast<WSEventLoop&>(CEventLoop::current()); }
+    int exec() { return m_event_loop.exec(); }
 
 private:
-    virtual void add_file_descriptors_for_select(fd_set&, int& max_fd_added) override;
-    virtual void process_file_descriptors_after_select(const fd_set&) override;
-
-    void drain_server();
     void drain_mouse();
     void drain_keyboard();
-    void drain_client(WSClientConnection&);
-    bool on_receive_from_client(int client_id, const WSAPI_ClientMessage&, ByteBuffer&& extra_data);
 
+    CEventLoop m_event_loop;
     int m_keyboard_fd { -1 };
+    OwnPtr<CNotifier> m_keyboard_notifier;
     int m_mouse_fd { -1 };
-    int m_server_fd { -1 };
+    OwnPtr<CNotifier> m_mouse_notifier;
+    CLocalServer m_server_sock;
+    OwnPtr<CNotifier> m_server_notifier;
 };

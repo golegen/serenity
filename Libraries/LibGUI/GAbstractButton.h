@@ -1,11 +1,13 @@
 #pragma once
 
+#include <LibCore/CTimer.h>
 #include <LibGUI/GWidget.h>
-#include <SharedGraphics/TextAlignment.h>
+#include <LibDraw/TextAlignment.h>
 
 class GPainter;
 
 class GAbstractButton : public GWidget {
+    C_OBJECT(GAbstractButton)
 public:
     virtual ~GAbstractButton() override;
 
@@ -27,9 +29,12 @@ public:
     bool is_being_pressed() const { return m_being_pressed; }
 
     virtual void click() = 0;
-    virtual const char* class_name() const override { return "GAbstractButton"; }
     virtual bool accepts_focus() const override { return true; }
-    virtual bool supports_keyboard_activation() const { return true; }
+    virtual bool supports_keyboard_activation() const override { return true; }
+    virtual bool is_uncheckable() const { return true; }
+
+    int auto_repeat_interval() const { return m_auto_repeat_interval; }
+    void set_auto_repeat_interval(int interval) { m_auto_repeat_interval = interval; }
 
 protected:
     explicit GAbstractButton(GWidget* parent);
@@ -54,6 +59,9 @@ private:
     bool m_hovered { false };
     bool m_being_pressed { false };
     bool m_exclusive { false };
+
+    int m_auto_repeat_interval { 0 };
+    CTimer m_auto_repeat_timer;
 };
 
 template<>

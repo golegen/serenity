@@ -4,6 +4,7 @@
 #include <LibCore/CLock.h>
 #include <LibCore/CNotifier.h>
 #include <LibCore/CObject.h>
+#include <LibCore/CSyscallUtils.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -20,25 +21,28 @@
 
 static CEventLoop* s_main_event_loop;
 static Vector<CEventLoop*>* s_event_loop_stack;
-HashMap<int, OwnPtr<CEventLoop::EventLoopTimer>>* CEventLoop::s_timers;
+HashMap<int, NonnullOwnPtr<CEventLoop::EventLoopTimer>>* CEventLoop::s_timers;
 HashTable<CNotifier*>* CEventLoop::s_notifiers;
 int CEventLoop::s_next_timer_id = 1;
+int CEventLoop::s_wake_pipe_fds[2];
 
 CEventLoop::CEventLoop()
 {
     if (!s_event_loop_stack) {
         s_event_loop_stack = new Vector<CEventLoop*>;
-        s_timers = new HashMap<int, OwnPtr<CEventLoop::EventLoopTimer>>;
+        s_timers = new HashMap<int, NonnullOwnPtr<CEventLoop::EventLoopTimer>>;
         s_notifiers = new HashTable<CNotifier*>;
     }
 
     if (!s_main_event_loop) {
         s_main_event_loop = this;
+        int rc = pipe(s_wake_pipe_fds);
+        ASSERT(rc == 0);
         s_event_loop_stack->append(this);
     }
 
 #ifdef CEVENTLOOP_DEBUG
-    dbgprintf("(%u) CEventLoop constructed :)\n", getpid());
+    dbg() << getpid() << " CEventLoop constructed :)";
 #endif
 }
 
@@ -98,24 +102,24 @@ int CEventLoop::exec()
 
 void CEventLoop::pump(WaitMode mode)
 {
-    // window server event processing...
-    do_processing();
-
-    if (m_queued_events.is_empty()) {
+    if (m_queued_events.is_empty())
         wait_for_event(mode);
-        do_processing();
-    }
+
     decltype(m_queued_events) events;
     {
         LOCKER(m_lock);
         events = move(m_queued_events);
     }
 
-    for (auto& queued_event : events) {
+    for (int i = 0; i < events.size(); ++i) {
+        auto& queued_event = events.at(i);
+        ASSERT(queued_event.event);
+
         auto* receiver = queued_event.receiver.ptr();
         auto& event = *queued_event.event;
 #ifdef CEVENTLOOP_DEBUG
-        dbgprintf("CEventLoop: %s{%p} event %u\n", receiver->class_name(), receiver, (unsigned)event.type());
+        if (receiver)
+            dbg() << "CEventLoop: " << *receiver << " event " << (int)event.type();
 #endif
         if (!receiver) {
             switch (event.type()) {
@@ -123,7 +127,7 @@ void CEventLoop::pump(WaitMode mode)
                 ASSERT_NOT_REACHED();
                 return;
             default:
-                dbgprintf("Event type %u with no receiver :(\n", event.type());
+                dbg() << "Event type " << event.type() << " with no receiver :(";
             }
         } else if (event.type() == CEvent::Type::DeferredInvoke) {
 #ifdef DEFERRED_INVOKE_DEBUG
@@ -136,18 +140,25 @@ void CEventLoop::pump(WaitMode mode)
 
         if (m_exit_requested) {
             LOCKER(m_lock);
-            auto rejigged_event_queue = move(events);
-            rejigged_event_queue.append(move(m_queued_events));
-            m_queued_events = move(rejigged_event_queue);
+#ifdef CEVENTLOOP_DEBUG
+            dbg() << "CEventLoop: Exit requested. Rejigging " << (events.size() - i) << " events.";
+#endif
+            decltype(m_queued_events) new_event_queue;
+            new_event_queue.ensure_capacity(m_queued_events.size() + events.size());
+            for (; i < events.size(); ++i)
+                new_event_queue.unchecked_append(move(events[i]));
+            new_event_queue.append(move(m_queued_events));
+            m_queued_events = move(new_event_queue);
+            return;
         }
     }
 }
 
-void CEventLoop::post_event(CObject& receiver, OwnPtr<CEvent>&& event)
+void CEventLoop::post_event(CObject& receiver, NonnullOwnPtr<CEvent>&& event)
 {
     LOCKER(m_lock);
 #ifdef CEVENTLOOP_DEBUG
-    dbgprintf("CEventLoop::post_event: {%u} << receiver=%p, event=%p\n", m_queued_events.size(), &receiver, event.ptr());
+    dbg() << "CEventLoop::post_event: {" << m_queued_events.size() << "} << receiver=" << receiver << ", event=" << event;
 #endif
     m_queued_events.append({ receiver.make_weak_ptr(), move(event) });
 }
@@ -167,7 +178,7 @@ void CEventLoop::wait_for_event(WaitMode mode)
     };
 
     int max_fd_added = -1;
-    add_file_descriptors_for_select(rfds, max_fd_added);
+    add_fd_to_set(s_wake_pipe_fds[0], rfds);
     max_fd = max(max_fd, max_fd_added);
     for (auto& notifier : *s_notifiers) {
         if (notifier->event_mask() & CNotifier::Read)
@@ -199,9 +210,15 @@ void CEventLoop::wait_for_event(WaitMode mode)
         should_wait_forever = false;
     }
 
-    int marked_fd_count = select(max_fd + 1, &rfds, &wfds, nullptr, should_wait_forever ? nullptr : &timeout);
-    if (marked_fd_count < 0) {
-        ASSERT_NOT_REACHED();
+    int marked_fd_count = CSyscallUtils::safe_syscall(select, max_fd + 1, &rfds, &wfds, nullptr, should_wait_forever ? nullptr : &timeout);
+    if (FD_ISSET(s_wake_pipe_fds[0], &rfds)) {
+        char buffer[32];
+        auto nread = read(s_wake_pipe_fds[0], buffer, sizeof(buffer));
+        if (nread < 0) {
+            perror("read from wake pipe");
+            ASSERT_NOT_REACHED();
+        }
+        ASSERT(nread > 0);
     }
 
     if (!s_timers->is_empty()) {
@@ -213,7 +230,7 @@ void CEventLoop::wait_for_event(WaitMode mode)
         if (!timer.has_expired(now))
             continue;
 #ifdef CEVENTLOOP_DEBUG
-        dbgprintf("CEventLoop: Timer %d has expired, sending CTimerEvent to %p\n", timer.timer_id, timer.owner);
+        dbg() << "CEventLoop: Timer " << timer.timer_id << " has expired, sending CTimerEvent to " << timer.owner;
 #endif
         post_event(*timer.owner, make<CTimerEvent>(timer.timer_id));
         if (timer.should_reload) {
@@ -230,15 +247,13 @@ void CEventLoop::wait_for_event(WaitMode mode)
     for (auto& notifier : *s_notifiers) {
         if (FD_ISSET(notifier->fd(), &rfds)) {
             if (notifier->on_ready_to_read)
-                notifier->on_ready_to_read();
+                post_event(*notifier, make<CNotifierReadEvent>(notifier->fd()));
         }
         if (FD_ISSET(notifier->fd(), &wfds)) {
             if (notifier->on_ready_to_write)
-                notifier->on_ready_to_write();
+                post_event(*notifier, make<CNotifierWriteEvent>(notifier->fd()));
         }
     }
-
-    process_file_descriptors_after_select(rfds);
 }
 
 bool CEventLoop::EventLoopTimer::has_expired(const timeval& now) const
@@ -278,7 +293,7 @@ int CEventLoop::register_timer(CObject& object, int milliseconds, bool should_re
     int timer_id = ++s_next_timer_id; // FIXME: This will eventually wrap around.
     ASSERT(timer_id);                 // FIXME: Aforementioned wraparound.
     timer->timer_id = timer_id;
-    s_timers->set(timer->timer_id, move(timer));
+    s_timers->set(timer_id, move(timer));
     return timer_id;
 }
 
@@ -299,4 +314,14 @@ void CEventLoop::register_notifier(Badge<CNotifier>, CNotifier& notifier)
 void CEventLoop::unregister_notifier(Badge<CNotifier>, CNotifier& notifier)
 {
     s_notifiers->remove(&notifier);
+}
+
+void CEventLoop::wake()
+{
+    char ch = '!';
+    int nwritten = write(s_wake_pipe_fds[1], &ch, 1);
+    if (nwritten < 0) {
+        perror("CEventLoop::wake: write");
+        ASSERT_NOT_REACHED();
+    }
 }

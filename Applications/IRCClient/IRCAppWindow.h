@@ -13,12 +13,17 @@ public:
     IRCAppWindow();
     virtual ~IRCAppWindow() override;
 
+    static IRCAppWindow& the();
+
+    void set_active_window(IRCWindow&);
+
 private:
     void setup_client();
     void setup_actions();
     void setup_menus();
     void setup_widgets();
     void update_title();
+    void update_part_action();
 
     IRCWindow& create_window(void* owner, IRCWindow::Type, const String& name);
     IRCClient m_client;

@@ -5,11 +5,12 @@
 #include <AK/HashMap.h>
 #include <LibCore/CElapsedTimer.h>
 #include <LibCore/CObject.h>
+#include <LibDraw/Color.h>
+#include <LibDraw/Font.h>
+#include <LibDraw/Orientation.h>
+#include <LibDraw/Rect.h>
 #include <LibGUI/GEvent.h>
 #include <LibGUI/GShortcut.h>
-#include <SharedGraphics/Color.h>
-#include <SharedGraphics/Font.h>
-#include <SharedGraphics/Rect.h>
 
 class GraphicsBitmap;
 class GAction;
@@ -21,10 +22,6 @@ enum class SizePolicy {
     Fixed,
     Fill
 };
-enum class Orientation {
-    Horizontal,
-    Vertical
-};
 enum class HorizontalDirection {
     Left,
     Right
@@ -35,6 +32,7 @@ enum class VerticalDirection {
 };
 
 class GWidget : public CObject {
+    C_OBJECT(GWidget)
 public:
     explicit GWidget(GWidget* parent = nullptr);
     virtual ~GWidget() override;
@@ -46,9 +44,11 @@ public:
     SizePolicy vertical_size_policy() const { return m_vertical_size_policy; }
     SizePolicy size_policy(Orientation orientation) { return orientation == Orientation::Horizontal ? m_horizontal_size_policy : m_vertical_size_policy; }
     void set_size_policy(SizePolicy horizontal_policy, SizePolicy vertical_policy);
+    void set_size_policy(Orientation, SizePolicy);
 
     Size preferred_size() const { return m_preferred_size; }
     void set_preferred_size(const Size&);
+    void set_preferred_size(int width, int height) { set_preferred_size({ width, height }); }
 
     bool has_tooltip() const { return !m_tooltip.is_empty(); }
     String tooltip() const { return m_tooltip; }
@@ -115,8 +115,6 @@ public:
     HitTestResult hit_test(const Point&);
     GWidget* child_at(const Point&) const;
 
-    virtual const char* class_name() const override { return "GWidget"; }
-
     void set_relative_rect(const Rect&);
     void set_relative_rect(int x, int y, int width, int height) { set_relative_rect({ x, y, width, height }); }
 
@@ -138,6 +136,12 @@ public:
 
     void set_background_color(Color color) { m_background_color = color; }
     void set_foreground_color(Color color) { m_foreground_color = color; }
+
+    // FIXME: Implement these.
+    void set_backcolor(const StringView&) {}
+    void set_forecolor(const StringView&) {}
+
+    void set_autofill(bool b) { set_fill_with_background_color(b); }
 
     GWindow* window()
     {
@@ -162,7 +166,8 @@ public:
     bool fill_with_background_color() const { return m_fill_with_background_color; }
 
     const Font& font() const { return *m_font; }
-    void set_font(RefPtr<Font>&&);
+    void set_font(Font*);
+    void set_font(Font& font) { set_font(&font); }
 
     void set_global_cursor_tracking(bool);
     bool global_cursor_tracking() const;
@@ -203,8 +208,6 @@ public:
     virtual bool is_abstract_button() const { return false; }
 
 private:
-    virtual bool is_widget() const final { return true; }
-
     void handle_paint_event(GPaintEvent&);
     void handle_resize_event(GResizeEvent&);
     void handle_mousedown_event(GMouseEvent&);

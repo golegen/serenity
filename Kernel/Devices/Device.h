@@ -9,7 +9,7 @@
 // There are two main subclasses:
 //   - BlockDevice (random access)
 //   - CharacterDevice (sequential)
-#include <Kernel/File.h>
+#include <Kernel/FileSystem/File.h>
 #include <Kernel/UnixTypes.h>
 
 class Device : public File {
@@ -25,6 +25,7 @@ public:
     uid_t gid() const { return m_gid; }
 
     virtual bool is_device() const override { return true; }
+    virtual bool is_disk_device() const { return false; }
 
 protected:
     Device(unsigned major, unsigned minor);

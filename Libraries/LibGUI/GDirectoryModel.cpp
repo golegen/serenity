@@ -3,12 +3,13 @@
 #include <AK/StringBuilder.h>
 #include <LibCore/CDirIterator.h>
 #include <LibCore/CLock.h>
+#include <LibDraw/GraphicsBitmap.h>
 #include <LibGUI/GPainter.h>
-#include <SharedGraphics/GraphicsBitmap.h>
 #include <dirent.h>
 #include <grp.h>
 #include <pwd.h>
 #include <stdio.h>
+#include <time.h>
 #include <unistd.h>
 
 static CLockable<HashMap<String, RefPtr<GraphicsBitmap>>>& thumbnail_cache()
@@ -106,6 +107,8 @@ String GDirectoryModel::column_name(int column) const
         return "Group";
     case Column::Permissions:
         return "Mode";
+    case Column::ModificationTime:
+        return "Modified";
     case Column::Inode:
         return "Inode";
     }
@@ -125,10 +128,12 @@ GModel::ColumnMetadata GDirectoryModel::column_metadata(int column) const
         return { 50, TextAlignment::CenterLeft };
     case Column::Group:
         return { 50, TextAlignment::CenterLeft };
+    case Column::ModificationTime:
+        return { 110, TextAlignment::CenterLeft };
     case Column::Permissions:
-        return { 80, TextAlignment::CenterLeft };
+        return { 65, TextAlignment::CenterLeft };
     case Column::Inode:
-        return { 80, TextAlignment::CenterRight };
+        return { 60, TextAlignment::CenterRight };
     }
     ASSERT_NOT_REACHED();
 }
@@ -149,16 +154,28 @@ GIcon GDirectoryModel::icon_for(const Entry& entry) const
             LOCKER(thumbnail_cache().lock());
             auto it = thumbnail_cache().resource().find(path);
             if (it != thumbnail_cache().resource().end()) {
-                entry.thumbnail = (*it).value.copy_ref();
+                entry.thumbnail = (*it).value;
             } else {
                 thumbnail_cache().resource().set(path, nullptr);
             }
+            if (!entry.thumbnail)
+                return m_filetype_image_icon;
         }
-        if (!entry.thumbnail)
-            return m_filetype_image_icon;
         return GIcon(m_filetype_image_icon.bitmap_for_size(16), *entry.thumbnail);
     }
     return m_file_icon;
+}
+
+static String timestamp_string(time_t timestamp)
+{
+    auto* tm = localtime(&timestamp);
+    return String::format("%4u-%02u-%02u %02u:%02u:%02u",
+        tm->tm_year + 1900,
+        tm->tm_mon + 1,
+        tm->tm_mday,
+        tm->tm_hour,
+        tm->tm_min,
+        tm->tm_sec);
 }
 
 static String permission_string(mode_t mode)
@@ -232,6 +249,8 @@ GVariant GDirectoryModel::data(const GModelIndex& index, Role role) const
             return name_for_gid(entry.gid);
         case Column::Permissions:
             return permission_string(entry.mode);
+        case Column::ModificationTime:
+            return entry.mtime;
         case Column::Inode:
             return (int)entry.inode;
         }
@@ -251,6 +270,8 @@ GVariant GDirectoryModel::data(const GModelIndex& index, Role role) const
             return name_for_gid(entry.gid);
         case Column::Permissions:
             return permission_string(entry.mode);
+        case Column::ModificationTime:
+            return timestamp_string(entry.mtime);
         case Column::Inode:
             return (int)entry.inode;
         }
@@ -289,6 +310,7 @@ void GDirectoryModel::update()
         entry.uid = st.st_uid;
         entry.gid = st.st_gid;
         entry.inode = st.st_ino;
+        entry.mtime = st.st_mtime;
         auto& entries = S_ISDIR(st.st_mode) ? m_directories : m_files;
         entries.append(move(entry));
 
@@ -301,15 +323,28 @@ void GDirectoryModel::update()
 
 void GDirectoryModel::open(const StringView& a_path)
 {
-    FileSystemPath canonical_path(a_path);
-    auto path = canonical_path.string();
+    auto path = canonicalized_path(a_path);
     if (m_path == path)
         return;
     DIR* dirp = opendir(path.characters());
     if (!dirp)
         return;
     closedir(dirp);
+    if (m_notifier)
+        close(m_notifier->fd());
     m_path = path;
+    int watch_fd = watch_file(path.characters(), path.length());
+    if (watch_fd < 0) {
+        perror("watch_file");
+        ASSERT_NOT_REACHED();
+    }
+    m_notifier = make<CNotifier>(watch_fd, CNotifier::Event::Read);
+    m_notifier->on_ready_to_read = [this] {
+        update();
+        char buffer[32];
+        int rc = read(m_notifier->fd(), buffer, sizeof(buffer));
+        ASSERT(rc >= 0);
+    };
     update();
     set_selected_index(index(0, 0));
 }

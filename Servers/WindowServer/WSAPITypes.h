@@ -1,7 +1,7 @@
 #pragma once
 
-#include <SharedGraphics/Color.h>
-#include <SharedGraphics/Rect.h>
+#include <LibDraw/Color.h>
+#include <LibDraw/Rect.h>
 
 typedef unsigned WSAPI_Color;
 
@@ -28,6 +28,7 @@ enum WSAPI_WindowType {
     Taskbar,
     Tooltip,
     Menubar,
+    Launcher,
 };
 
 struct WSAPI_WindowBackingStoreInfo {
@@ -110,10 +111,13 @@ struct WSAPI_ServerMessage {
         DidGetWallpaper,
         DidSetWindowHasAlphaChannel,
         ScreenRectChanged,
+
+        __Begin_WM_Events__,
         WM_WindowRemoved,
         WM_WindowStateChanged,
         WM_WindowRectChanged,
-        WM_WindowIconChanged,
+        WM_WindowIconBitmapChanged,
+        __End_WM_Events__,
     };
     Type type { Invalid };
     int window_id { -1 };
@@ -144,6 +148,8 @@ struct WSAPI_ServerMessage {
             bool is_active;
             bool is_minimized;
             WSAPI_WindowType window_type;
+            int icon_buffer_id;
+            WSAPI_Size icon_size;
         } wm;
         struct {
             WSAPI_Rect rect;
@@ -225,9 +231,9 @@ struct WSAPI_ClientMessage {
         WM_PopupWindowMenu,
         PopupMenu,
         DismissMenu,
-        SetWindowIcon,
         SetWindowHasAlphaChannel,
         MoveWindowToFront,
+        SetWindowIconBitmap,
     };
     Type type { Invalid };
     int window_id { -1 };
@@ -277,6 +283,8 @@ struct WSAPI_ClientMessage {
             WSAPI_Size base_size;
             WSAPI_Size size_increment;
             WSAPI_Color background_color;
+            int icon_buffer_id;
+            WSAPI_Size icon_size;
         } window;
         struct {
             WSAPI_Size size;

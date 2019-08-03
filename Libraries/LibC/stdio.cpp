@@ -1,6 +1,6 @@
 #include <AK/PrintfImplementation.h>
+#include <AK/ScopedValueRollback.h>
 #include <AK/StdLibExtras.h>
-#include <AK/ValueRestorer.h>
 #include <Kernel/Syscall.h>
 #include <assert.h>
 #include <errno.h>
@@ -18,7 +18,6 @@ static FILE __default_streams[4];
 FILE* stdin;
 FILE* stdout;
 FILE* stderr;
-FILE* stddbg;
 
 void init_FILE(FILE& fp, int fd, int mode)
 {
@@ -41,16 +40,9 @@ void __stdio_init()
     stdin = &__default_streams[0];
     stdout = &__default_streams[1];
     stderr = &__default_streams[2];
-    stddbg = &__default_streams[3];
     init_FILE(*stdin, 0, isatty(0) ? _IOLBF : _IOFBF);
     init_FILE(*stdout, 1, isatty(1) ? _IOLBF : _IOFBF);
     init_FILE(*stderr, 2, _IONBF);
-    int fd = open("/dev/debuglog", O_WRONLY | O_CLOEXEC);
-    if (fd < 0) {
-        perror("open /dev/debuglog");
-        ASSERT_NOT_REACHED();
-    }
-    init_FILE(*stddbg, fd, _IOLBF);
 }
 
 int setvbuf(FILE* stream, char* buf, int mode, size_t size)
@@ -137,12 +129,9 @@ int fgetc(FILE* stream)
     assert(stream);
     char ch;
     size_t nread = fread(&ch, sizeof(char), 1, stream);
-    if (nread <= 0) {
-        stream->eof = nread == 0;
-        stream->error = errno;
-        return EOF;
-    }
-    return ch;
+    if (nread == 1)
+        return ch;
+    return EOF;
 }
 
 int getc(FILE* stream)
@@ -337,14 +326,10 @@ void rewind(FILE* stream)
 
 int dbgprintf(const char* fmt, ...)
 {
-    // if this fails, you're printing too early.
-    ASSERT(stddbg);
-    int errno_backup = errno;
     va_list ap;
     va_start(ap, fmt);
-    int ret = vfprintf(stddbg, fmt, ap);
+    int ret = printf_internal([](char*&, char ch) { dbgputch(ch); }, nullptr, fmt, ap);
     va_end(ap);
-    errno = errno_backup;
     return ret;
 }
 
@@ -495,6 +480,17 @@ int rename(const char* oldpath, const char* newpath)
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
+void dbgputch(char ch)
+{
+    syscall(SC_dbgputch, ch);
+}
+
+int dbgputstr(const char* characters, int length)
+{
+    int rc = syscall(SC_dbgputstr, characters, length);
+    __RETURN_WITH_ERRNO(rc, rc, -1);
+}
+
 char* tmpnam(char*)
 {
     ASSERT_NOT_REACHED();
@@ -511,7 +507,7 @@ FILE* popen(const char* command, const char* type)
 
     int rc = pipe(pipe_fds);
     if (rc < 0) {
-        ValueRestorer restorer(errno);
+        ScopedValueRollback rollback(errno);
         perror("pipe");
         return nullptr;
     }

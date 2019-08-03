@@ -4,8 +4,15 @@
 
 class GSlider : public GWidget {
 public:
-    explicit GSlider(GWidget*);
+    enum class KnobSizeMode {
+        Fixed,
+        Proportional,
+    };
+
+    GSlider(Orientation, GWidget*);
     virtual ~GSlider() override;
+
+    Orientation orientation() const { return m_orientation; }
 
     int value() const { return m_value; }
     int min() const { return m_min; }
@@ -17,12 +24,21 @@ public:
     void set_min(int min) { set_range(min, max()); }
     void set_max(int max) { set_range(min(), max); }
 
-    int track_height() const { return 2; }
-    int knob_width() const { return 8; }
-    int knob_height() const { return 20; }
+    void set_knob_size_mode(KnobSizeMode mode) { m_knob_size_mode = mode; }
+    KnobSizeMode knob_size_mode() const { return m_knob_size_mode; }
+
+    int track_size() const { return 2; }
+    int knob_fixed_primary_size() const { return 8; }
+    int knob_secondary_size() const { return 20; }
 
     Rect knob_rect() const;
-    Rect inner_rect() const { return rect().shrunken(20, 0); }
+
+    Rect inner_rect() const
+    {
+        if (orientation() == Orientation::Horizontal)
+            return rect().shrunken(20, 0);
+        return rect().shrunken(0, 20);
+    }
 
     Function<void(int)> on_value_changed;
 
@@ -40,9 +56,10 @@ private:
     int m_value { 0 };
     int m_min { 0 };
     int m_max { 100 };
-
     bool m_knob_hovered { false };
     bool m_dragging { false };
     int m_drag_origin_value { 0 };
     Point m_drag_origin;
+    KnobSizeMode m_knob_size_mode { KnobSizeMode::Fixed };
+    Orientation m_orientation { Orientation::Horizontal };
 };

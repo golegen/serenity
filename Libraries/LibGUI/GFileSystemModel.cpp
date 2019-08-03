@@ -92,7 +92,7 @@ struct GFileSystemModel::Node {
         }
         builder.append('/');
         builder.append(name);
-        return FileSystemPath(builder.to_string()).string();
+        return canonicalized_path(builder.to_string());
     }
 };
 
@@ -107,6 +107,7 @@ GModelIndex GFileSystemModel::index(const StringView& path) const
         bool found = false;
         for (auto& child : node->children) {
             if (child->name == part) {
+                child->reify_if_needed(*this);
                 node = child;
                 found = true;
                 if (i == canonical_path.parts().size() - 1)
@@ -130,7 +131,7 @@ String GFileSystemModel::path(const GModelIndex& index) const
 }
 
 GFileSystemModel::GFileSystemModel(const StringView& root_path, Mode mode)
-    : m_root_path(FileSystemPath(root_path).string())
+    : m_root_path(canonicalized_path(root_path))
     , m_mode(mode)
 {
     m_open_folder_icon = GIcon::default_icon("filetype-folder-open");

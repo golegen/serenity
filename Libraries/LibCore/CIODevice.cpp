@@ -1,8 +1,10 @@
 #include <AK/PrintfImplementation.h>
 #include <LibCore/CIODevice.h>
+#include <LibCore/CSyscallUtils.h>
 #include <errno.h>
 #include <stdio.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -18,6 +20,13 @@ CIODevice::~CIODevice()
 const char* CIODevice::error_string() const
 {
     return strerror(m_error);
+}
+
+int CIODevice::read(u8* buffer, int length)
+{
+    auto read_buffer = read(length);
+    memcpy(buffer, read_buffer.data(), length);
+    return read_buffer.size();
 }
 
 ByteBuffer CIODevice::read(int max_size)
@@ -71,7 +80,7 @@ bool CIODevice::can_read_from_fd() const
     struct timeval timeout {
         0, 0
     };
-    int rc = select(m_fd + 1, &rfds, nullptr, nullptr, &timeout);
+    int rc = CSyscallUtils::safe_syscall(select, m_fd + 1, &rfds, nullptr, nullptr, &timeout);
     if (rc < 0) {
         // NOTE: We don't set m_error here.
         perror("CIODevice::can_read: select");
@@ -99,9 +108,17 @@ bool CIODevice::can_read() const
 
 ByteBuffer CIODevice::read_all()
 {
-    ByteBuffer buffer;
+    off_t file_size = 0;
+    struct stat st;
+    int rc = fstat(fd(), &st);
+    if (rc == 0)
+        file_size = st.st_size;
+
+    Vector<u8> data;
+    data.ensure_capacity(file_size);
+
     if (!m_buffered_data.is_empty()) {
-        buffer = ByteBuffer::copy(m_buffered_data.data(), m_buffered_data.size());
+        data.append(m_buffered_data.data(), m_buffered_data.size());
         m_buffered_data.clear();
     }
 
@@ -110,15 +127,15 @@ ByteBuffer CIODevice::read_all()
         int nread = ::read(m_fd, read_buffer, sizeof(read_buffer));
         if (nread < 0) {
             set_error(nread);
-            return buffer;
+            return ByteBuffer::copy(data.data(), data.size());
         }
         if (nread == 0) {
             set_eof(true);
             break;
         }
-        buffer.append(read_buffer, nread);
+        data.append((const u8*)read_buffer, nread);
     }
-    return buffer;
+    return ByteBuffer::copy(data.data(), data.size());
 }
 
 ByteBuffer CIODevice::read_line(int max_size)
@@ -232,11 +249,18 @@ int CIODevice::printf(const char* format, ...)
     va_start(ap, format);
     // FIXME: We're not propagating write() failures to client here!
     int ret = printf_internal([this](char*&, char ch) {
-        int rc = write((const u8*)&ch, 1);
-        if (rc < 0)
-            dbgprintf("CIODevice::printf: write: %s\n", strerror(errno));
+        write((const u8*)&ch, 1);
     },
         nullptr, format, ap);
     va_end(ap);
     return ret;
+}
+
+void CIODevice::set_fd(int fd)
+{
+    if (m_fd == fd)
+        return;
+
+    m_fd = fd;
+    did_update_fd(fd);
 }

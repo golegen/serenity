@@ -16,12 +16,13 @@
  *  [ ] handle fire bitmap edges better
 */
 
+#include <LibDraw/GraphicsBitmap.h>
+#include <LibDraw/PNGLoader.h>
 #include <LibGUI/GApplication.h>
 #include <LibGUI/GLabel.h>
 #include <LibGUI/GPainter.h>
 #include <LibGUI/GWidget.h>
 #include <LibGUI/GWindow.h>
-#include <SharedGraphics/GraphicsBitmap.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
@@ -214,7 +215,6 @@ int main(int argc, char** argv)
     GApplication app(argc, argv);
 
     auto* window = new GWindow;
-    window->set_should_exit_event_loop_on_close(true);
     window->set_double_buffering_enabled(false);
     window->set_title("Fire");
     window->set_resizable(false);
@@ -230,7 +230,7 @@ int main(int argc, char** argv)
     fire->set_stat_label(time);
 
     window->show();
-    window->set_icon_path("/res/icons/16x16/app-demo.png");
+    window->set_icon(load_png("/res/icons/16x16/app-demo.png"));
 
     return app.exec();
 }

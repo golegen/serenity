@@ -38,7 +38,12 @@ mknod -m 666 mnt/dev/full c 1 7
 mknod -m 666 mnt/dev/debuglog c 1 18
 mknod mnt/dev/keyboard c 85 1
 mknod mnt/dev/psaux c 10 1
+mknod -m 666 mnt/dev/audio c 42 42
 mknod -m 666 mnt/dev/ptmx c 5 2
+mknod mnt/dev/hda b 3 0
+mknod mnt/dev/hdb b 3 1
+mknod mnt/dev/hdc b 4 0
+mknod mnt/dev/hdd b 4 1
 ln -s /proc/self/fd/0 mnt/dev/stdin
 ln -s /proc/self/fd/1 mnt/dev/stdout
 ln -s /proc/self/fd/2 mnt/dev/stderr
@@ -76,7 +81,10 @@ cp ../Applications/Terminal/Terminal mnt/bin/Terminal
 cp ../Applications/TextEditor/TextEditor mnt/bin/TextEditor
 cp ../Applications/PaintBrush/PaintBrush mnt/bin/PaintBrush
 cp ../Applications/QuickShow/QuickShow mnt/bin/QuickShow
+cp ../Applications/Piano/Piano mnt/bin/Piano
+cp ../Applications/SystemDialog/SystemDialog mnt/bin/SystemDialog
 cp ../Demos/HelloWorld/HelloWorld mnt/bin/HelloWorld
+cp ../Demos/HelloWorld2/HelloWorld2 mnt/bin/HelloWorld2
 cp ../Demos/RetroFetch/RetroFetch mnt/bin/RetroFetch
 cp ../Demos/WidgetGallery/WidgetGallery mnt/bin/WidgetGallery
 cp ../Demos/Fire/Fire mnt/bin/Fire
@@ -86,6 +94,7 @@ cp ../Games/Snake/Snake mnt/bin/Snake
 cp ../Servers/LookupServer/LookupServer mnt/bin/LookupServer
 cp ../Servers/SystemServer/SystemServer mnt/bin/SystemServer
 cp ../Servers/WindowServer/WindowServer mnt/bin/WindowServer
+cp ../Servers/AudioServer/AudioServer mnt/bin/AudioServer
 cp ../Shell/Shell mnt/bin/Shell
 cp ../Libraries/LibHTML/tho mnt/bin/tho
 echo "done"
@@ -94,6 +103,7 @@ echo -n "installing shortcuts... "
 ln -s Downloader mnt/bin/dl
 ln -s FileManager mnt/bin/fm
 ln -s HelloWorld mnt/bin/hw
+ln -s HelloWorld2 mnt/bin/hw2
 ln -s IRCClient mnt/bin/irc
 ln -s Minesweeper mnt/bin/ms
 ln -s Shell mnt/bin/sh
@@ -104,6 +114,8 @@ ln -s WidgetGallery mnt/bin/wg
 ln -s TextEditor mnt/bin/te
 ln -s PaintBrush mnt/bin/pb
 ln -s QuickShow mnt/bin/qs
+ln -s Piano mnt/bin/pi
+ln -s SystemDialog mnt/bin/sd
 echo "done"
 
 # Run local sync script, if it exists

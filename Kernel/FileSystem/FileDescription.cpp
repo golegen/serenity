@@ -6,9 +6,9 @@
 #include <Kernel/FileSystem/FileDescription.h>
 #include <Kernel/FileSystem/FileSystem.h>
 #include <Kernel/FileSystem/InodeFile.h>
+#include <Kernel/FileSystem/SharedMemory.h>
 #include <Kernel/Net/Socket.h>
 #include <Kernel/Process.h>
-#include <Kernel/SharedMemory.h>
 #include <Kernel/TTY/MasterPTY.h>
 #include <Kernel/TTY/TTY.h>
 #include <Kernel/UnixTypes.h>
@@ -22,7 +22,7 @@ NonnullRefPtr<FileDescription> FileDescription::create(RefPtr<Custody>&& custody
     return description;
 }
 
-NonnullRefPtr<FileDescription> FileDescription::create(RefPtr<File>&& file, SocketRole role)
+NonnullRefPtr<FileDescription> FileDescription::create(RefPtr<File> file, SocketRole role)
 {
     return adopt(*new FileDescription(move(file), role));
 }
@@ -64,9 +64,9 @@ NonnullRefPtr<FileDescription> FileDescription::clone()
     if (is_fifo()) {
         description = fifo()->open_direction(m_fifo_direction);
     } else {
-        description = FileDescription::create(m_file.copy_ref(), m_socket_role);
-        description->m_custody = m_custody.copy_ref();
-        description->m_inode = m_inode.copy_ref();
+        description = FileDescription::create(m_file, m_socket_role);
+        description->m_custody = m_custody;
+        description->m_inode = m_inode;
     }
     ASSERT(description);
     description->m_current_offset = m_current_offset;
@@ -143,14 +143,16 @@ ssize_t FileDescription::write(const u8* data, ssize_t size)
     return nwritten;
 }
 
-bool FileDescription::can_write()
+bool FileDescription::can_write() const
 {
-    return m_file->can_write(*this);
+    // FIXME: Remove this const_cast.
+    return m_file->can_write(const_cast<FileDescription&>(*this));
 }
 
-bool FileDescription::can_read()
+bool FileDescription::can_read() const
 {
-    return m_file->can_read(*this);
+    // FIXME: Remove this const_cast.
+    return m_file->can_read(const_cast<FileDescription&>(*this));
 }
 
 ByteBuffer FileDescription::read_entire_file()

@@ -22,9 +22,13 @@ class PageDirectory;
 class Region;
 class VMObject;
 class ProcessTracer;
+class SharedBuffer;
 
 timeval kgettimeofday();
 void kgettimeofday(timeval&);
+
+extern VirtualAddress g_return_to_ring3_from_signal_trampoline;
+extern VirtualAddress g_return_to_ring0_from_signal_trampoline;
 
 class Process : public InlineLinkedListNode<Process>
     , public Weakable<Process> {
@@ -52,6 +56,8 @@ public:
         Ring0 = 0,
         Ring3 = 3,
     };
+
+    String backtrace(ProcessInspectionHandle&) const;
 
     bool is_dead() const { return m_dead; }
 
@@ -101,6 +107,10 @@ public:
     void die();
     void finalize();
 
+    int sys$watch_file(const char* path, int path_length);
+    int sys$dbgputch(u8);
+    int sys$dbgputstr(const u8*, int length);
+    int sys$dump_backtrace();
     int sys$gettid();
     int sys$donate(int tid);
     int sys$shm_open(const char* name, int flags, mode_t);
@@ -118,7 +128,7 @@ public:
     pid_t sys$getpid();
     pid_t sys$getppid();
     mode_t sys$umask(mode_t);
-    int sys$open(const char* path, int options, mode_t mode = 0);
+    int sys$open(const Syscall::SC_open_params*);
     int sys$close(int fd);
     ssize_t sys$read(int fd, u8*, ssize_t);
     ssize_t sys$write(int fd, const u8*, ssize_t);
@@ -173,6 +183,7 @@ public:
     int sys$unlink(const char* pathname);
     int sys$symlink(const char* target, const char* linkpath);
     int sys$rmdir(const char* pathname);
+    int sys$mount(const char* device, const char* mountpoint);
     int sys$read_tsc(u32* lsw, u32* msw);
     int sys$chmod(const char* pathname, mode_t);
     int sys$fchmod(int fd, mode_t);
@@ -197,11 +208,16 @@ public:
     int sys$rename(const char* oldpath, const char* newpath);
     int sys$systrace(pid_t);
     int sys$mknod(const char* pathname, mode_t, dev_t);
-    int sys$create_shared_buffer(pid_t peer_pid, int, void** buffer);
+    int sys$create_shared_buffer(int, void** buffer);
+    int sys$share_buffer_with(int, pid_t peer_pid);
+    int sys$share_buffer_globally(int);
     void* sys$get_shared_buffer(int shared_buffer_id);
     int sys$release_shared_buffer(int shared_buffer_id);
     int sys$seal_shared_buffer(int shared_buffer_id);
     int sys$get_shared_buffer_size(int shared_buffer_id);
+    int sys$halt();
+    int sys$reboot();
+    int sys$set_process_icon(int icon_id);
 
     static void initialize();
 
@@ -249,8 +265,8 @@ public:
 
     bool is_superuser() const { return m_euid == 0; }
 
-    Region* allocate_region_with_vmo(VirtualAddress, size_t, NonnullRefPtr<VMObject>&&, size_t offset_in_vmo, const String& name, int prot);
-    Region* allocate_file_backed_region(VirtualAddress, size_t, RefPtr<Inode>&&, const String& name, int prot);
+    Region* allocate_region_with_vmo(VirtualAddress, size_t, NonnullRefPtr<VMObject>, size_t offset_in_vmo, const String& name, int prot);
+    Region* allocate_file_backed_region(VirtualAddress, size_t, NonnullRefPtr<Inode>, const String& name, int prot);
     Region* allocate_region(VirtualAddress, size_t, const String& name, int prot = PROT_READ | PROT_WRITE, bool commit = true);
     bool deallocate_region(Region& region);
 
@@ -269,12 +285,14 @@ public:
 
     const ELFLoader* elf_loader() const { return m_elf_loader.ptr(); }
 
+    int icon_id() const { return m_icon_id; }
+
 private:
     friend class MemoryManager;
     friend class Scheduler;
     friend class Region;
 
-    Process(String&& name, uid_t, gid_t, pid_t ppid, RingLevel, RefPtr<Custody>&& cwd = nullptr, RefPtr<Custody>&& executable = nullptr, TTY* = nullptr, Process* fork_parent = nullptr);
+    Process(String&& name, uid_t, gid_t, pid_t ppid, RingLevel, RefPtr<Custody> cwd = nullptr, RefPtr<Custody> executable = nullptr, TTY* = nullptr, Process* fork_parent = nullptr);
 
     Range allocate_range(VirtualAddress, size_t);
 
@@ -283,8 +301,6 @@ private:
 
     int alloc_fd(int first_candidate_fd = 0);
     void disown_all_shared_buffers();
-
-    void create_signal_trampolines_if_needed();
 
     Thread* m_main_thread { nullptr };
 
@@ -329,9 +345,6 @@ private:
 
     NonnullRefPtrVector<Region> m_regions;
 
-    VirtualAddress m_return_to_ring3_from_signal_trampoline;
-    VirtualAddress m_return_to_ring0_from_signal_trampoline;
-
     pid_t m_ppid { 0 };
     mode_t m_umask { 022 };
 
@@ -352,6 +365,8 @@ private:
     Lock m_big_lock { "Process" };
 
     u64 m_alarm_deadline { 0 };
+
+    int m_icon_id { -1 };
 };
 
 class ProcessInspectionHandle {
@@ -411,7 +426,7 @@ inline void Process::for_each_child(Callback callback)
     for (auto* process = g_processes->head(); process;) {
         auto* next_process = process->next();
         if (process->ppid() == my_pid) {
-            if (!callback(*process))
+            if (callback(*process) == IterationDecision::Break)
                 break;
         }
         process = next_process;
@@ -423,22 +438,12 @@ inline void Process::for_each_thread(Callback callback) const
 {
     InterruptDisabler disabler;
     pid_t my_pid = pid();
-    for (auto* thread = g_runnable_threads->head(); thread;) {
-        auto* next_thread = thread->next();
-        if (thread->pid() == my_pid) {
-            if (callback(*thread) == IterationDecision::Break)
-                break;
-        }
-        thread = next_thread;
-    }
-    for (auto* thread = g_nonrunnable_threads->head(); thread;) {
-        auto* next_thread = thread->next();
-        if (thread->pid() == my_pid) {
-            if (callback(*thread) == IterationDecision::Break)
-                break;
-        }
-        thread = next_thread;
-    }
+    Thread::for_each([callback, my_pid](Thread& thread) -> IterationDecision {
+        if (thread.pid() == my_pid)
+            return callback(thread);
+
+        return IterationDecision::Continue;
+    });
 }
 
 template<typename Callback>
@@ -473,4 +478,9 @@ inline bool InodeMetadata::may_execute(Process& process) const
 inline int Thread::pid() const
 {
     return m_process.pid();
+}
+
+inline const LogStream& operator<<(const LogStream& stream, const Process& process)
+{
+    return stream << process.name() << '(' << process.pid() << ')';
 }

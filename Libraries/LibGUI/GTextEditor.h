@@ -2,8 +2,9 @@
 
 #include <AK/Function.h>
 #include <AK/HashMap.h>
+#include <AK/NonnullOwnPtrVector.h>
+#include <LibDraw/TextAlignment.h>
 #include <LibGUI/GScrollableWidget.h>
-#include <SharedGraphics/TextAlignment.h>
 
 class GAction;
 class GMenu;
@@ -77,6 +78,7 @@ private:
 };
 
 class GTextEditor : public GScrollableWidget {
+    C_OBJECT(GTextEditor)
 public:
     enum Type {
         MultiLine,
@@ -132,8 +134,6 @@ public:
     Function<void()> on_change;
     Function<void()> on_return_pressed;
     Function<void()> on_escape_pressed;
-
-    virtual const char* class_name() const override { return "GTextEditor"; }
 
     GAction& undo_action() { return *m_undo_action; }
     GAction& redo_action() { return *m_redo_action; }
@@ -193,8 +193,8 @@ private:
     void update_cursor();
     void set_cursor(int line, int column);
     void set_cursor(const GTextPosition&);
-    Line& current_line() { return *m_lines[m_cursor.line()]; }
-    const Line& current_line() const { return *m_lines[m_cursor.line()]; }
+    Line& current_line() { return m_lines[m_cursor.line()]; }
+    const Line& current_line() const { return m_lines[m_cursor.line()]; }
     GTextPosition text_position_at(const Point&) const;
     void insert_at_cursor(char);
     void insert_at_cursor(const StringView&);
@@ -208,7 +208,7 @@ private:
 
     Type m_type { MultiLine };
 
-    Vector<OwnPtr<Line>> m_lines;
+    NonnullOwnPtrVector<Line> m_lines;
     GTextPosition m_cursor;
     TextAlignment m_text_alignment { TextAlignment::CenterLeft };
     bool m_cursor_state { true };

@@ -5,7 +5,7 @@
 #include <LibGUI/GButton.h>
 #include <LibGUI/GWidget.h>
 #include <LibGUI/GWindow.h>
-#include <SharedGraphics/GraphicsBitmap.h>
+#include <LibDraw/GraphicsBitmap.h>
 #include <errno.h>
 #include <signal.h>
 #include <stdio.h>
@@ -30,7 +30,6 @@ int main(int argc, char** argv)
     signal(SIGCHLD, handle_sigchld);
 
     auto* launcher_window = make_launcher_window();
-    launcher_window->set_should_exit_event_loop_on_close(true);
     launcher_window->show();
 
     return app.exec();
@@ -45,7 +44,7 @@ public:
         set_tooltip(name);
         set_button_style(ButtonStyle::CoolBar);
         set_icon(GraphicsBitmap::load_from_file(icon_path));
-        set_preferred_size({ 50, 50 });
+        set_preferred_size(50, 50);
         set_size_policy(SizePolicy::Fixed, SizePolicy::Fixed);
         on_click = [this](GButton&) {
             pid_t child_pid = fork();
@@ -72,6 +71,7 @@ GWindow* make_launcher_window()
     int launcher_size = (config->groups().size() - 1) * 50;
     window->set_rect(50, 50, vertical ? 50 : launcher_size, vertical ? launcher_size : 50);
     window->set_show_titlebar(false);
+    window->set_window_type(GWindowType::Launcher);
 
     auto* widget = new GWidget;
     widget->set_fill_with_background_color(true);

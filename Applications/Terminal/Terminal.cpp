@@ -8,7 +8,7 @@
 #include <LibGUI/GClipboard.h>
 #include <LibGUI/GPainter.h>
 #include <LibGUI/GWindow.h>
-#include <SharedGraphics/Font.h>
+#include <LibDraw/Font.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,6 +87,10 @@ void Terminal::Line::set_length(u16 new_length)
     auto* new_characters = new u8[new_length];
     auto* new_attributes = new Attribute[new_length];
     memset(new_characters, ' ', new_length);
+    if (characters && attributes) {
+        memcpy(new_characters, characters, min(m_length, new_length));
+        memcpy(new_attributes, attributes, min(m_length, new_length) * sizeof(Attribute));
+    }
     delete[] characters;
     delete[] attributes;
     characters = new_characters;
@@ -926,11 +930,11 @@ void Terminal::set_size(u16 columns, u16 rows)
         while (m_lines.size() < rows)
             m_lines.append(make<Line>(columns));
     } else {
-        m_lines.resize(rows);
+        m_lines.shrink(rows);
     }
 
     for (int i = 0; i < rows; ++i)
-        m_lines[i]->set_length(columns);
+        m_lines[i].set_length(columns);
 
     m_columns = columns;
     m_rows = rows;
@@ -938,10 +942,10 @@ void Terminal::set_size(u16 columns, u16 rows)
     m_scroll_region_top = 0;
     m_scroll_region_bottom = rows - 1;
 
-    m_cursor_row = 0;
-    m_cursor_column = 0;
-    m_saved_cursor_row = 0;
-    m_saved_cursor_column = 0;
+    m_cursor_row = min((int)m_cursor_row, m_rows - 1);
+    m_cursor_column = min((int)m_cursor_column, m_columns - 1);
+    m_saved_cursor_row = min((int)m_saved_cursor_row, m_rows - 1);
+    m_saved_cursor_column = min((int)m_saved_cursor_column, m_columns - 1);
 
     m_horizontal_tabs.resize(columns);
     for (unsigned i = 0; i < columns; ++i)
@@ -953,7 +957,7 @@ void Terminal::set_size(u16 columns, u16 rows)
     m_pixel_height = (frame_thickness() * 2) + (m_inset * 2) + (m_rows * (font().glyph_height() + m_line_spacing)) - m_line_spacing;
 
     set_size_policy(SizePolicy::Fixed, SizePolicy::Fixed);
-    set_preferred_size({ m_pixel_width, m_pixel_height });
+    set_preferred_size(m_pixel_width, m_pixel_height);
 
     m_needs_background_fill = true;
     force_repaint();

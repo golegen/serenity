@@ -5,6 +5,7 @@
 #include <LibCore/CObject.h>
 
 class CIODevice : public CObject {
+    C_OBJECT(CIODevice)
 public:
     enum OpenMode {
         NotOpen = 0,
@@ -27,12 +28,15 @@ public:
 
     bool has_error() const { return m_error != 0; }
 
+
+    int read(u8* buffer, int length);
+
     ByteBuffer read(int max_size);
     ByteBuffer read_line(int max_size);
     ByteBuffer read_all();
 
     bool write(const u8*, int size);
-    bool write(const AK::StringView& v) { return write((const u8*)v.characters(), v.length()); }
+    bool write(const StringView& v) { return write((const u8*)v.characters_without_null_termination(), v.length()); }
 
     // FIXME: I would like this to be const but currently it needs to call populate_read_buffer().
     bool can_read_line();
@@ -52,15 +56,15 @@ public:
 
     int printf(const char*, ...);
 
-    virtual const char* class_name() const override { return "CIODevice"; }
-
 protected:
     explicit CIODevice(CObject* parent = nullptr);
 
-    void set_fd(int fd) { m_fd = fd; }
+    void set_fd(int);
     void set_mode(OpenMode mode) { m_mode = mode; }
     void set_error(int error) { m_error = error; }
     void set_eof(bool eof) { m_eof = eof; }
+
+    virtual void did_update_fd(int) {}
 
 private:
     bool populate_read_buffer();

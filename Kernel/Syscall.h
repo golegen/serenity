@@ -83,6 +83,7 @@ struct timeval;
     __ENUMERATE_SYSCALL(listen)                 \
     __ENUMERATE_SYSCALL(connect)                \
     __ENUMERATE_SYSCALL(create_shared_buffer)   \
+    __ENUMERATE_SYSCALL(share_buffer_with)      \
     __ENUMERATE_SYSCALL(get_shared_buffer)      \
     __ENUMERATE_SYSCALL(release_shared_buffer)  \
     __ENUMERATE_SYSCALL(link)                   \
@@ -113,7 +114,15 @@ struct timeval;
     __ENUMERATE_SYSCALL(sched_setparam)         \
     __ENUMERATE_SYSCALL(sched_getparam)         \
     __ENUMERATE_SYSCALL(fchown)                 \
-    __ENUMERATE_SYSCALL(halt)
+    __ENUMERATE_SYSCALL(halt)                   \
+    __ENUMERATE_SYSCALL(reboot)                 \
+    __ENUMERATE_SYSCALL(mount)                  \
+    __ENUMERATE_SYSCALL(dump_backtrace)         \
+    __ENUMERATE_SYSCALL(dbgputch)               \
+    __ENUMERATE_SYSCALL(dbgputstr)              \
+    __ENUMERATE_SYSCALL(watch_file)             \
+    __ENUMERATE_SYSCALL(share_buffer_globally)  \
+    __ENUMERATE_SYSCALL(set_process_icon)
 
 namespace Syscall {
 
@@ -146,6 +155,13 @@ struct SC_mmap_params {
     int32_t fd;
     int32_t offset; // FIXME: 64-bit off_t?
     const char* name { nullptr };
+};
+
+struct SC_open_params {
+    const char* path;
+    int path_length;
+    int options;
+    u16 mode;
 };
 
 struct SC_select_params {

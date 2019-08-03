@@ -3,8 +3,8 @@
 #include <Kernel/KeyCode.h>
 #include <LibCore/CEvent.h>
 #include <LibGUI/GWindowType.h>
-#include <SharedGraphics/Point.h>
-#include <SharedGraphics/Rect.h>
+#include <LibDraw/Point.h>
+#include <LibDraw/Rect.h>
 
 class CObject;
 
@@ -39,7 +39,7 @@ public:
         WM_WindowRemoved,
         WM_WindowStateChanged,
         WM_WindowRectChanged,
-        WM_WindowIconChanged,
+        WM_WindowIconBitmapChanged,
         __End_WM_Events,
     };
 
@@ -119,18 +119,21 @@ private:
     Rect m_rect;
 };
 
-class GWMWindowIconChangedEvent : public GWMEvent {
+class GWMWindowIconBitmapChangedEvent : public GWMEvent {
 public:
-    GWMWindowIconChangedEvent(int client_id, int window_id, const StringView& icon_path)
-        : GWMEvent(GEvent::Type::WM_WindowIconChanged, client_id, window_id)
-        , m_icon_path(icon_path)
+    GWMWindowIconBitmapChangedEvent(int client_id, int window_id, int icon_buffer_id, const Size& icon_size)
+        : GWMEvent(GEvent::Type::WM_WindowIconBitmapChanged, client_id, window_id)
+        , m_icon_buffer_id(icon_buffer_id)
+        , m_icon_size(icon_size)
     {
     }
 
-    String icon_path() const { return m_icon_path; }
+    int icon_buffer_id() const { return m_icon_buffer_id; }
+    const Size& icon_size() const { return m_icon_size; }
 
 private:
-    String m_icon_path;
+    int m_icon_buffer_id;
+    Size m_icon_size;
 };
 
 class GMultiPaintEvent final : public GEvent {
@@ -242,7 +245,7 @@ public:
     String text() const { return m_text; }
 
 private:
-    friend class GEventLoop;
+    friend class GWindowServerConnection;
     int m_key { 0 };
     u8 m_modifiers { 0 };
     String m_text;

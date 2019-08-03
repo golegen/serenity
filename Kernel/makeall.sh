@@ -14,12 +14,16 @@ fi
 make_cmd="make -j $MAKEJOBS"
 
 build_targets=""
+build_targets="$build_targets ../DevTools/FormCompiler"
 build_targets="$build_targets ../Libraries/LibC"
 build_targets="$build_targets ../Libraries/LibM"
 build_targets="$build_targets ../Libraries/LibCore"
+build_targets="$build_targets ../Libraries/LibDraw"
+build_targets="$build_targets ../Libraries/LibAudio"
 build_targets="$build_targets ../Servers/SystemServer"
 build_targets="$build_targets ../Servers/LookupServer"
 build_targets="$build_targets ../Servers/WindowServer"
+build_targets="$build_targets ../Servers/AudioServer"
 build_targets="$build_targets ../Libraries/LibGUI"
 build_targets="$build_targets ../Libraries/LibHTML"
 build_targets="$build_targets ../Userland"
@@ -35,11 +39,14 @@ build_targets="$build_targets ../Applications/Taskbar"
 build_targets="$build_targets ../Applications/Downloader"
 build_targets="$build_targets ../Applications/PaintBrush"
 build_targets="$build_targets ../Applications/QuickShow"
+build_targets="$build_targets ../Applications/Piano"
+build_targets="$build_targets ../Applications/SystemDialog"
 build_targets="$build_targets ../DevTools/VisualBuilder"
 build_targets="$build_targets ../Games/Minesweeper"
 build_targets="$build_targets ../Games/Snake"
 build_targets="$build_targets ../Shell"
 build_targets="$build_targets ../Demos/HelloWorld"
+build_targets="$build_targets ../Demos/HelloWorld2"
 build_targets="$build_targets ../Demos/RetroFetch"
 build_targets="$build_targets ../Demos/WidgetGallery"
 build_targets="$build_targets ../Demos/Fire"
@@ -58,8 +65,9 @@ for targ in $build_targets; do
 done
 
 # has no need to build separately, but install headers.
-(cd ../SharedGraphics && ./install.sh)
 (cd ../AK && ./install.sh)
+(cd ../AK/Tests && $make_cmd clean)
+(cd ../AK/Tests && $make_cmd)
 
 sudo -E ./build-image-qemu.sh
 

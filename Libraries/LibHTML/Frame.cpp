@@ -52,13 +52,8 @@ RefPtr<StyledNode> Frame::generate_style_tree()
     return styled_root;
 }
 
-void Frame::layout()
+RefPtr<LayoutNode> Frame::generate_layout_tree(const StyledNode& styled_root)
 {
-    if (!m_document)
-        return;
-
-    auto styled_root = generate_style_tree();
-
     auto create_layout_node = [](const StyledNode& styled_node) -> RefPtr<LayoutNode> {
         if (styled_node.node() && styled_node.node()->is_document())
             return adopt(*new LayoutDocument(static_cast<const Document&>(*styled_node.node()), styled_node));
@@ -66,7 +61,7 @@ void Frame::layout()
         case Display::None:
             return nullptr;
         case Display::Block:
-            return adopt(*new LayoutBlock(*styled_node.node(), styled_node));
+            return adopt(*new LayoutBlock(styled_node.node(), &styled_node));
         case Display::Inline:
             return adopt(*new LayoutInline(*styled_node.node(), styled_node));
         default:
@@ -74,21 +69,34 @@ void Frame::layout()
         }
     };
 
-    Function<RefPtr<LayoutNode>(const StyledNode&, LayoutNode*)> resolve_layout = [&](const StyledNode& styled_node, LayoutNode* parent_layout_node) -> RefPtr<LayoutNode> {
+    Function<RefPtr<LayoutNode>(const StyledNode&)> build_layout_tree;
+    build_layout_tree = [&](const StyledNode& styled_node) -> RefPtr<LayoutNode> {
         auto layout_node = create_layout_node(styled_node);
         if (!layout_node)
             return nullptr;
-        if (parent_layout_node)
-            parent_layout_node->append_child(*layout_node);
-        if (styled_node.has_children()) {
-            for (auto* child = styled_node.first_child(); child; child = child->next_sibling()) {
-                resolve_layout(*child, layout_node.ptr());
-            }
+        if (!styled_node.has_children())
+            return layout_node;
+        for (auto* styled_child = styled_node.first_child(); styled_child; styled_child = styled_child->next_sibling()) {
+            auto layout_child = build_layout_tree(*styled_child);
+            if (!layout_child)
+                continue;
+            if (layout_child->is_inline())
+                layout_node->inline_wrapper().append_child(*layout_child);
+            else
+                layout_node->append_child(*layout_child);
         }
         return layout_node;
     };
+    return build_layout_tree(styled_root);
+}
 
-    auto layout_root = resolve_layout(*styled_root, nullptr);
+void Frame::layout()
+{
+    if (!m_document)
+        return;
+
+    auto styled_root = generate_style_tree();
+    auto layout_root = generate_layout_tree(*styled_root);
 
     layout_root->style().size().set_width(m_size.width());
 

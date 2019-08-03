@@ -4,17 +4,16 @@
 #include <AK/Types.h>
 #include <Kernel/KeyCode.h>
 #include <LibCore/CEvent.h>
-#include <SharedGraphics/Point.h>
-#include <SharedGraphics/Rect.h>
+#include <LibDraw/Point.h>
+#include <LibDraw/Rect.h>
 #include <WindowServer/WSCursor.h>
 #include <WindowServer/WSWindowType.h>
 
 class WSEvent : public CEvent {
 public:
     enum Type {
-        Invalid = 2000,
+        Invalid = 3000,
         WM_DeferredCompose,
-        WM_ClientDisconnected,
         MouseMove,
         MouseDown,
         MouseDoubleClick,
@@ -32,7 +31,7 @@ public:
         WM_WindowRemoved,
         WM_WindowStateChanged,
         WM_WindowRectChanged,
-        WM_WindowIconChanged,
+        WM_WindowIconBitmapChanged,
 
         __Begin_API_Client_Requests,
         APICreateMenubarRequest,
@@ -50,7 +49,7 @@ public:
         APIGetWindowTitleRequest,
         APISetWindowRectRequest,
         APIGetWindowRectRequest,
-        APISetWindowIconRequest,
+        APISetWindowIconBitmapRequest,
         APIInvalidateRectRequest,
         APIDidFinishPaintingNotification,
         APIGetWindowBackingStoreRequest,
@@ -83,20 +82,6 @@ public:
     bool is_client_request() const { return type() > __Begin_API_Client_Requests && type() < __End_API_Client_Requests; }
     bool is_mouse_event() const { return type() == MouseMove || type() == MouseDown || type() == MouseDoubleClick || type() == MouseUp || type() == MouseWheel; }
     bool is_key_event() const { return type() == KeyUp || type() == KeyDown; }
-};
-
-class WSClientDisconnectedNotification : public WSEvent {
-public:
-    explicit WSClientDisconnectedNotification(int client_id)
-        : WSEvent(WM_ClientDisconnected)
-        , m_client_id(client_id)
-    {
-    }
-
-    int client_id() const { return m_client_id; }
-
-private:
-    int m_client_id { 0 };
 };
 
 class WSAPIClientRequest : public WSEvent {
@@ -586,21 +571,24 @@ private:
     Rect m_rect;
 };
 
-class WSAPISetWindowIconRequest final : public WSAPIClientRequest {
+class WSAPISetWindowIconBitmapRequest final : public WSAPIClientRequest {
 public:
-    explicit WSAPISetWindowIconRequest(int client_id, int window_id, const String& icon_path)
-        : WSAPIClientRequest(WSEvent::APISetWindowIconRequest, client_id)
+    explicit WSAPISetWindowIconBitmapRequest(int client_id, int window_id, int icon_buffer_id, const Size& icon_size)
+        : WSAPIClientRequest(WSEvent::APISetWindowIconBitmapRequest, client_id)
         , m_window_id(window_id)
-        , m_icon_path(icon_path)
+        , m_icon_buffer_id(icon_buffer_id)
+        , m_icon_size(icon_size)
     {
     }
 
     int window_id() const { return m_window_id; }
-    String icon_path() const { return m_icon_path; }
+    int icon_buffer_id() const { return m_icon_buffer_id; }
+    const Size& icon_size() const { return m_icon_size; }
 
 private:
     int m_window_id { 0 };
-    String m_icon_path;
+    int m_icon_buffer_id { 0 };
+    Size m_icon_size;
 };
 
 class WSAPIGetWindowRectRequest final : public WSAPIClientRequest {
@@ -857,18 +845,21 @@ private:
     bool m_minimized;
 };
 
-class WSWMWindowIconChangedEvent : public WSWMEvent {
+class WSWMWindowIconBitmapChangedEvent : public WSWMEvent {
 public:
-    WSWMWindowIconChangedEvent(int client_id, int window_id, const String& icon_path)
-        : WSWMEvent(WSEvent::WM_WindowIconChanged, client_id, window_id)
-        , m_icon_path(icon_path)
+    WSWMWindowIconBitmapChangedEvent(int client_id, int window_id, int icon_buffer_id, const Size& icon_size)
+        : WSWMEvent(WSEvent::WM_WindowIconBitmapChanged, client_id, window_id)
+        , m_icon_buffer_id(icon_buffer_id)
+        , m_icon_size(icon_size)
     {
     }
 
-    String icon_path() const { return m_icon_path; }
+    int icon_buffer_id() const { return m_icon_buffer_id; }
+    const Size icon_size() const { return m_icon_size; }
 
 private:
-    String m_icon_path;
+    int m_icon_buffer_id;
+    Size m_icon_size;
 };
 
 class WSWMWindowRectChangedEvent : public WSWMEvent {

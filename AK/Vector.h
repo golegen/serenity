@@ -147,10 +147,28 @@ public:
         m_size = 0;
     }
 
+    bool operator==(const Vector& other) const
+    {
+        if (m_size != other.m_size)
+            return false;
+
+        for (int i = 0; i < m_size; ++i) {
+            if (at(i) != other.at(i))
+                return false;
+        }
+
+        return true;
+    }
+
+    bool operator!=(const Vector& other) const
+    {
+        return !(*this == other);
+    }
+
     bool contains_slow(const T& value) const
     {
         for (int i = 0; i < size(); ++i) {
-            if (Traits<T>::equals(at(i), value))
+            if (at(i) == value)
                 return true;
         }
         return false;
@@ -308,6 +326,14 @@ public:
         unchecked_append(T(value));
     }
 
+    template<class... Args>
+    void empend(Args&&... args)
+    {
+        grow_capacity(m_size + 1);
+        new (slot(m_size)) T(forward<Args>(args)...);
+        ++m_size;
+    }
+
     void append(T&& value)
     {
         grow_capacity(size() + 1);
@@ -329,6 +355,31 @@ public:
         }
         new (slot(0)) T(value);
         ++m_size;
+    }
+
+    void prepend(Vector&& other)
+    {
+        if (other.is_empty())
+            return;
+
+        if (is_empty()) {
+            *this = move(other);
+            return;
+        }
+
+        auto other_size = other.size();
+        grow_capacity(size() + other_size);
+
+        for (int i = size() + other_size - 1; i >= other.size(); --i) {
+            new (slot(i)) T(move(at(i - other_size)));
+            at(i - other_size).~T();
+        }
+
+        Vector tmp = move(other);
+        for (int i = 0; i < tmp.size(); ++i)
+            new (slot(i)) T(move(tmp.at(i)));
+
+        m_size += other_size;
     }
 
     void append(const T* values, int count)
@@ -364,21 +415,9 @@ public:
         m_capacity = new_capacity;
     }
 
-    void shift_left(int count)
+    void shrink(int new_size)
     {
-        ASSERT(count <= m_size);
-        if (count == m_size) {
-            clear();
-            return;
-        }
-        for (int i = 0; i < m_size - count; ++i) {
-            at(i) = move(at(i + count));
-        }
-        m_size -= count;
-    }
-
-    void resize(int new_size)
-    {
+        ASSERT(new_size <= size());
         if (new_size == size())
             return;
 
@@ -387,14 +426,19 @@ public:
             return;
         }
 
-        if (new_size > size()) {
-            ensure_capacity(new_size);
-            for (int i = size(); i < new_size; ++i)
-                new (slot(i)) T;
-        } else {
-            for (int i = new_size; i < size(); ++i)
-                at(i).~T();
-        }
+        for (int i = new_size; i < size(); ++i)
+            at(i).~T();
+        m_size = new_size;
+    }
+
+    void resize(int new_size)
+    {
+        if (new_size <= size())
+            return shrink(new_size);
+
+        ensure_capacity(new_size);
+        for (int i = size(); i < new_size; ++i)
+            new (slot(i)) T;
         m_size = new_size;
     }
 

@@ -1,4 +1,5 @@
 #include <AK/AKString.h>
+#include <AK/ScopedValueRollback.h>
 #include <AK/Vector.h>
 #include <Kernel/Syscall.h>
 #include <assert.h>
@@ -53,9 +54,11 @@ int execve(const char* filename, char* const argv[], char* const envp[])
 
 int execvpe(const char* filename, char* const argv[], char* const envp[])
 {
+    ScopedValueRollback errno_rollback(errno);
     int rc = execve(filename, argv, envp);
     if (rc < 0 && errno != ENOENT) {
-        fprintf(stderr, "execvpe() failed on first with %s\n", strerror(errno));
+        errno_rollback.set_override_rollback_value(errno);
+        dbg() << "execvpe() failed on first with" << strerror(errno);
         return rc;
     }
     String path = getenv("PATH");
@@ -66,17 +69,21 @@ int execvpe(const char* filename, char* const argv[], char* const envp[])
         auto candidate = String::format("%s/%s", part.characters(), filename);
         int rc = execve(candidate.characters(), argv, envp);
         if (rc < 0 && errno != ENOENT) {
-            printf("execvpe() failed on attempt (%s) with %s\n", candidate.characters(), strerror(errno));
+            errno_rollback.set_override_rollback_value(errno);
+            dbg() << "execvpe() failed on attempt (" << candidate << ") with " << strerror(errno);
             return rc;
         }
     }
-    errno = ENOENT;
+    errno_rollback.set_override_rollback_value(ENOENT);
+    dbg() << "execvpe() leaving :(";
     return -1;
 }
 
 int execvp(const char* filename, char* const argv[])
 {
-    return execvpe(filename, argv, environ);
+    int rc = execvpe(filename, argv, environ);
+    dbg() << "execvp() about to return " << rc << " with errno=" << errno;
+    return rc;
 }
 
 int execl(const char* filename, const char* arg0, ...)
@@ -166,13 +173,29 @@ int creat(const char* path, mode_t mode)
     return open(path, O_CREAT | O_WRONLY | O_TRUNC, mode);
 }
 
+int creat_with_path_length(const char* path, size_t path_length, mode_t mode)
+{
+    return open_with_path_length(path, path_length, O_CREAT | O_WRONLY | O_TRUNC, mode);
+}
+
+int open_with_path_length(const char* path, size_t path_length, int options, mode_t mode)
+{
+    if (path_length > INT32_MAX) {
+        errno = EINVAL;
+        return -1;
+    }
+    Syscall::SC_open_params params { path, (int)path_length, options, mode };
+    int rc = syscall(SC_open, &params);
+    __RETURN_WITH_ERRNO(rc, rc, -1);
+}
+
 int open(const char* path, int options, ...)
 {
     va_list ap;
     va_start(ap, options);
-    int rc = syscall(SC_open, path, options, (mode_t)va_arg(ap, unsigned));
+    auto mode = (mode_t)va_arg(ap, unsigned);
     va_end(ap);
-    __RETURN_WITH_ERRNO(rc, rc, -1);
+    return open_with_path_length(path, strlen(path), options, mode);
 }
 
 ssize_t read(int fd, void* buf, size_t count)
@@ -407,9 +430,27 @@ int read_tsc(unsigned* lsw, unsigned* msw)
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
-int create_shared_buffer(pid_t peer_pid, int size, void** buffer)
+int create_shared_buffer(int size, void** buffer)
 {
-    int rc = syscall(SC_create_shared_buffer, peer_pid, size, buffer);
+    int rc = syscall(SC_create_shared_buffer, size, buffer);
+    __RETURN_WITH_ERRNO(rc, rc, -1);
+}
+
+int share_buffer_with(int shared_buffer_id, pid_t peer_pid)
+{
+    int rc = syscall(SC_share_buffer_with, shared_buffer_id, peer_pid);
+    __RETURN_WITH_ERRNO(rc, rc, -1);
+}
+
+int share_buffer_globally(int shared_buffer_id)
+{
+    int rc = syscall(SC_share_buffer_globally, shared_buffer_id);
+    __RETURN_WITH_ERRNO(rc, rc, -1);
+}
+
+int set_process_icon(int icon_id)
+{
+    int rc = syscall(SC_set_process_icon, icon_id);
     __RETURN_WITH_ERRNO(rc, rc, -1);
 }
 
@@ -491,5 +532,28 @@ int fsync(int fd)
     UNUSED_PARAM(fd);
     dbgprintf("FIXME: Implement fsync()\n");
     return 0;
+}
+
+int halt()
+{
+    int rc = syscall(SC_halt);
+    __RETURN_WITH_ERRNO(rc, rc, -1);
+}
+
+int reboot()
+{
+    int rc = syscall(SC_reboot);
+    __RETURN_WITH_ERRNO(rc, rc, -1);
+}
+
+int mount(const char* device, const char* mountpoint)
+{
+    int rc = syscall(SC_mount, device, mountpoint);
+    __RETURN_WITH_ERRNO(rc, rc, -1);
+}
+
+void dump_backtrace()
+{
+    syscall(SC_dump_backtrace);
 }
 }

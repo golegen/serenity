@@ -1,3 +1,4 @@
+#include "IRCAppWindow.h"
 #include "IRCClient.h"
 #include "IRCChannel.h"
 #include "IRCLogBuffer.h"
@@ -267,7 +268,10 @@ void IRCClient::handle(const Message& msg)
         return handle_topic(msg);
 
     if (msg.command == "PRIVMSG")
-        return handle_privmsg(msg);
+        return handle_privmsg_or_notice(msg, PrivmsgOrNotice::Privmsg);
+
+    if (msg.command == "NOTICE")
+        return handle_privmsg_or_notice(msg, PrivmsgOrNotice::Notice);
 
     if (msg.command == "NICK")
         return handle_nick(msg);
@@ -326,7 +330,7 @@ bool IRCClient::is_nick_prefix(char ch) const
     return false;
 }
 
-void IRCClient::handle_privmsg(const Message& msg)
+void IRCClient::handle_privmsg_or_notice(const Message& msg, PrivmsgOrNotice type)
 {
     if (msg.arguments.size() < 2)
         return;
@@ -337,7 +341,10 @@ void IRCClient::handle_privmsg(const Message& msg)
     auto target = msg.arguments[0];
 
 #ifdef IRC_DEBUG
-    printf("handle_privmsg: sender_nick='%s', target='%s'\n", sender_nick.characters(), target.characters());
+    printf("handle_privmsg_or_notice: type='%s', sender_nick='%s', target='%s'\n",
+        type == PrivmsgOrNotice::Privmsg ? "privmsg" : "notice",
+        sender_nick.characters(),
+        target.characters());
 #endif
 
     if (sender_nick.is_empty())
@@ -367,7 +374,7 @@ IRCQuery& IRCClient::ensure_query(const String& name)
         return *(*it).value;
     auto query = IRCQuery::create(*this, name);
     auto& query_reference = *query;
-    m_queries.set(name, query.copy_ref());
+    m_queries.set(name, query);
     return query_reference;
 }
 
@@ -378,7 +385,7 @@ IRCChannel& IRCClient::ensure_channel(const String& name)
         return *(*it).value;
     auto channel = IRCChannel::create(*this, name);
     auto& channel_reference = *channel;
-    m_channels.set(name, channel.copy_ref());
+    m_channels.set(name, channel);
     return channel_reference;
 }
 
@@ -581,7 +588,7 @@ void IRCClient::unregister_subwindow(IRCWindow& subwindow)
 
 void IRCClient::handle_user_command(const String& input)
 {
-    auto parts = input.split(' ');
+    auto parts = input.split_view(' ');
     if (parts.is_empty())
         return;
     auto command = String(parts[0]).to_uppercase();
@@ -601,8 +608,19 @@ void IRCClient::handle_user_command(const String& input)
         return;
     }
     if (command == "/QUERY") {
-        if (parts.size() >= 2)
-            ensure_query(parts[1]);
+        if (parts.size() >= 2) {
+            auto& query = ensure_query(parts[1]);
+            IRCAppWindow::the().set_active_window(query.window());
+        }
+        return;
+    }
+    if (command == "/MSG") {
+        if (parts.size() < 3)
+            return;
+        auto nick = parts[1];
+        auto& query = ensure_query(nick);
+        IRCAppWindow::the().set_active_window(query.window());
+        query.say(input.view().substring_view_starting_after_substring(nick));
         return;
     }
     if (command == "/WHOIS") {
@@ -646,4 +664,10 @@ void IRCClient::handle_join_action(const String& channel)
 void IRCClient::handle_part_action(const String& channel)
 {
     part_channel(channel);
+}
+
+void IRCClient::did_part_from_channel(Badge<IRCChannel>, IRCChannel& channel)
+{
+    if (on_part_from_channel)
+        on_part_from_channel(channel);
 }

@@ -39,7 +39,6 @@ enum ProcFileType {
     FI_Root_kmalloc,
     FI_Root_all,
     FI_Root_memstat,
-    FI_Root_summary,
     FI_Root_cpuinfo,
     FI_Root_inodes,
     FI_Root_dmesg,
@@ -194,14 +193,17 @@ ByteBuffer procfs$pid_fds(InodeIdentifier identifier)
     auto& process = handle->process();
     if (process.number_of_open_file_descriptors() == 0)
         return {};
-    StringBuilder builder;
+    JsonArray array;
     for (int i = 0; i < process.max_open_file_descriptors(); ++i) {
         auto* description = process.file_description(i);
         if (!description)
             continue;
-        builder.appendf("%-3u %s\n", i, description->absolute_path().characters());
+        JsonObject description_object;
+        description_object.set("fd", i);
+        description_object.set("absolute_path", description->absolute_path());
+        array.append(move(description_object));
     }
-    return builder.to_byte_buffer();
+    return array.serialized().to_byte_buffer();
 }
 
 ByteBuffer procfs$pid_fd_entry(InodeIdentifier identifier)
@@ -223,23 +225,18 @@ ByteBuffer procfs$pid_vm(InodeIdentifier identifier)
     if (!handle)
         return {};
     auto& process = handle->process();
-    StringBuilder builder;
-    builder.appendf("BEGIN       END         SIZE      COMMIT     FLAGS  NAME\n");
+    JsonArray array;
     for (auto& region : process.regions()) {
-        StringBuilder flags_builder;
-        if (region.is_readable())
-            flags_builder.append('R');
-        if (region.is_writable())
-            flags_builder.append('W');
-        builder.appendf("%x -- %x    %x  %x   %-4s   %s\n",
-            region.vaddr().get(),
-            region.vaddr().offset(region.size() - 1).get(),
-            region.size(),
-            region.amount_resident(),
-            flags_builder.to_string().characters(),
-            region.name().characters());
+        JsonObject region_object;
+        region_object.set("readable", region.is_readable());
+        region_object.set("writable", region.is_writable());
+        region_object.set("address", region.vaddr().get());
+        region_object.set("size", region.size());
+        region_object.set("amount_resident", region.amount_resident());
+        region_object.set("name", region.name());
+        array.append(move(region_object));
     }
-    return builder.to_byte_buffer();
+    return array.serialized().to_byte_buffer();
 }
 
 ByteBuffer procfs$pci(InodeIdentifier)
@@ -315,37 +312,7 @@ ByteBuffer procfs$pid_stack(InodeIdentifier identifier)
     if (!handle)
         return {};
     auto& process = handle->process();
-    ProcessPagingScope paging_scope(process);
-    struct RecognizedSymbol {
-        u32 address;
-        const KSym* ksym;
-    };
-    StringBuilder builder;
-    process.for_each_thread([&](Thread& thread) {
-        builder.appendf("Thread %d:\n", thread.tid());
-        Vector<RecognizedSymbol, 64> recognized_symbols;
-        recognized_symbols.append({ thread.tss().eip, ksymbolicate(thread.tss().eip) });
-        for (u32* stack_ptr = (u32*)thread.frame_ptr(); process.validate_read_from_kernel(VirtualAddress((u32)stack_ptr)); stack_ptr = (u32*)*stack_ptr) {
-            u32 retaddr = stack_ptr[1];
-            recognized_symbols.append({ retaddr, ksymbolicate(retaddr) });
-        }
-
-        for (auto& symbol : recognized_symbols) {
-            if (!symbol.address)
-                break;
-            if (!symbol.ksym) {
-                builder.appendf("%p\n", symbol.address);
-                continue;
-            }
-            unsigned offset = symbol.address - symbol.ksym->address;
-            if (symbol.ksym->address == ksym_highest_address && offset > 4096)
-                builder.appendf("%p\n", symbol.address);
-            else
-                builder.appendf("%p  %s +%u\n", symbol.address, symbol.ksym->name, offset);
-        }
-        return IterationDecision::Continue;
-    });
-    return builder.to_byte_buffer();
+    return process.backtrace(*handle).to_byte_buffer();
 }
 
 ByteBuffer procfs$pid_regs(InodeIdentifier identifier)
@@ -511,7 +478,7 @@ ByteBuffer procfs$cpuinfo(InodeIdentifier)
     {
         // FIXME: Check first that this is supported by calling CPUID with eax=0x80000000
         //        and verifying that the returned eax>=0x80000004.
-        char buffer[48];
+        alignas(u32) char buffer[48];
         u32* bufptr = reinterpret_cast<u32*>(buffer);
         auto copy_brand_string_part_to_buffer = [&](u32 i) {
             CPUID cpuid(0x80000002 + i);
@@ -541,29 +508,6 @@ ByteBuffer procfs$kmalloc(InodeIdentifier)
     return builder.to_byte_buffer();
 }
 
-ByteBuffer procfs$summary(InodeIdentifier)
-{
-    InterruptDisabler disabler;
-    auto processes = Process::all_processes();
-    StringBuilder builder;
-    builder.appendf("PID TPG PGP SID  OWNER  STATE      PPID NSCHED     FDS  TTY  NAME\n");
-    for (auto* process : processes) {
-        builder.appendf("%-3u %-3u %-3u %-3u  %-4u   %-8s   %-3u  %-9u  %-3u  %-4s  %s\n",
-            process->pid(),
-            process->tty() ? process->tty()->pgid() : 0,
-            process->pgid(),
-            process->sid(),
-            process->uid(),
-            to_string(process->state()),
-            process->ppid(),
-            process->main_thread().times_scheduled(), // FIXME(Thread): Bill all scheds to the process
-            process->number_of_open_file_descriptors(),
-            process->tty() ? strrchr(process->tty()->tty_name().characters(), '/') + 1 : "n/a",
-            process->name().characters());
-    }
-    return builder.to_byte_buffer();
-}
-
 ByteBuffer procfs$memstat(InodeIdentifier)
 {
     InterruptDisabler disabler;
@@ -585,15 +529,18 @@ ByteBuffer procfs$all(InodeIdentifier)
     InterruptDisabler disabler;
     auto processes = Process::all_processes();
     JsonArray array;
+
+    // Keep this in sync with CProcessStatistics.
     auto build_process = [&](const Process& process) {
         JsonObject process_object;
         process_object.set("pid", process.pid());
         process_object.set("times_scheduled", process.main_thread().times_scheduled());
         process_object.set("pgid", process.tty() ? process.tty()->pgid() : 0);
+        process_object.set("pgp", process.pgid());
         process_object.set("sid", process.sid());
         process_object.set("uid", process.uid());
         process_object.set("gid", process.gid());
-        process_object.set("state", to_string(process.state()));
+        process_object.set("state", process.main_thread().state_string());
         process_object.set("ppid", process.ppid());
         process_object.set("nfds", process.number_of_open_file_descriptors());
         process_object.set("name", process.name());
@@ -604,6 +551,7 @@ ByteBuffer procfs$all(InodeIdentifier)
         process_object.set("ticks", process.main_thread().ticks());
         process_object.set("priority", to_string(process.priority()));
         process_object.set("syscall_count", process.syscall_count());
+        process_object.set("icon_id", process.icon_id());
         array.append(process_object);
     };
     build_process(*Scheduler::colonel());
@@ -723,7 +671,7 @@ void ProcFS::add_sys_bool(String&& name, Lockable<bool>& var, Function<void()>&&
     data->notify_callback = move(notify_callback);
     data->address = &var;
     inode->set_custom_data(move(data));
-    m_sys_entries.append({ strdup(name.characters()), 0, read_sys_bool, write_sys_bool, move(inode) });
+    m_sys_entries.empend(strdup(name.characters()), 0, read_sys_bool, write_sys_bool, move(inode));
 }
 
 void ProcFS::add_sys_string(String&& name, Lockable<String>& var, Function<void()>&& notify_callback)
@@ -737,7 +685,7 @@ void ProcFS::add_sys_string(String&& name, Lockable<String>& var, Function<void(
     data->notify_callback = move(notify_callback);
     data->address = &var;
     inode->set_custom_data(move(data));
-    m_sys_entries.append({ strdup(name.characters()), 0, read_sys_string, write_sys_string, move(inode) });
+    m_sys_entries.empend(strdup(name.characters()), 0, read_sys_string, write_sys_string, move(inode));
 }
 
 bool ProcFS::initialize()
@@ -1118,7 +1066,6 @@ ProcFS::ProcFS()
     m_entries[FI_Root_kmalloc] = { "kmalloc", FI_Root_kmalloc, procfs$kmalloc };
     m_entries[FI_Root_all] = { "all", FI_Root_all, procfs$all };
     m_entries[FI_Root_memstat] = { "memstat", FI_Root_memstat, procfs$memstat };
-    m_entries[FI_Root_summary] = { "summary", FI_Root_summary, procfs$summary };
     m_entries[FI_Root_cpuinfo] = { "cpuinfo", FI_Root_cpuinfo, procfs$cpuinfo };
     m_entries[FI_Root_inodes] = { "inodes", FI_Root_inodes, procfs$inodes };
     m_entries[FI_Root_dmesg] = { "dmesg", FI_Root_dmesg, procfs$dmesg };

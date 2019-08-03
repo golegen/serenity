@@ -13,20 +13,27 @@ public:
     const String& string() const { return m_string; }
 
     const String& basename() const { return m_basename; }
+    const String& title() const { return m_title; }
+    const String& extension() const { return m_extension; }
 
     const Vector<String>& parts() const { return m_parts; }
 
     bool has_extension(StringView) const;
 
 private:
-    bool canonicalize(bool resolve_symbolic_links = false);
+    void canonicalize();
 
     Vector<String> m_parts;
     String m_string;
     String m_basename;
+    String m_title;
+    String m_extension;
     bool m_is_valid { false };
 };
+
+String canonicalized_path(const StringView&);
 
 };
 
 using AK::FileSystemPath;
+using AK::canonicalized_path;

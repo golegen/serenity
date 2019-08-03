@@ -1,16 +1,6 @@
 include ../../Makefile.common
 
-SHAREDGRAPHICS_OBJS = \
-    ../../SharedGraphics/Painter.o \
-    ../../SharedGraphics/StylePainter.o \
-    ../../SharedGraphics/Font.o \
-    ../../SharedGraphics/Rect.o \
-    ../../SharedGraphics/GraphicsBitmap.o \
-    ../../SharedGraphics/CharacterBitmap.o \
-    ../../SharedGraphics/Color.o \
-    ../../SharedGraphics/PNGLoader.o
-
-LIBGUI_OBJS = \
+OBJS = \
     GPainter.o \
     GButton.o \
     GCheckBox.o \
@@ -27,6 +17,7 @@ LIBGUI_OBJS = \
     GMenuItem.o \
     GApplication.o \
     GAction.o \
+    GActionGroup.o \
     GFontDatabase.o \
     GToolBar.o \
     GTableView.o \
@@ -63,8 +54,6 @@ LIBGUI_OBJS = \
     GComboBox.o \
     GWindow.o
 
-OBJS = $(SHAREDGRAPHICS_OBJS) $(LIBGUI_OBJS)
-
 LIBRARY = libgui.a
 DEFINES += -DUSERLAND
 
@@ -80,10 +69,3 @@ $(LIBRARY): $(OBJS)
 
 clean:
 	@echo "CLEAN"; rm -f $(LIBRARY) $(OBJS) *.d
-
-install: $(LIBRARY)
-	mkdir -p ../../Root/usr/include/LibGUI
-	# Copy headers
-	rsync -r -a --include '*/' --include '*.h' --exclude '*' . ../../Root/usr/include/LibGUI
-	# Install the library
-	cp $(LIBRARY) ../../Root/usr/lib

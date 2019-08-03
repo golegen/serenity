@@ -15,9 +15,9 @@ class IRCWindowListModel;
 class CNotifier;
 
 class IRCClient final : public CObject {
+    C_OBJECT(IRCClient)
     friend class IRCChannel;
     friend class IRCQuery;
-
 public:
     IRCClient();
     virtual ~IRCClient() override;
@@ -44,6 +44,7 @@ public:
     Function<void()> on_disconnect;
     Function<void()> on_server_message;
     Function<void(const String&)> on_nickname_changed;
+    Function<void(IRCChannel&)> on_part_from_channel;
 
     Function<IRCWindow*(void*, IRCWindow::Type, const String&)> aid_create_window;
     Function<IRCWindow*()> aid_get_active_window;
@@ -58,6 +59,17 @@ public:
     int window_count() const { return m_windows.size(); }
     const IRCWindow& window_at(int index) const { return *m_windows.at(index); }
     IRCWindow& window_at(int index) { return *m_windows.at(index); }
+
+    int window_index(const IRCWindow& window) const
+    {
+        for (int i = 0; i < m_windows.size(); ++i) {
+            if (m_windows[i] == &window)
+                return i;
+        }
+        return -1;
+    }
+
+    void did_part_from_channel(Badge<IRCChannel>, IRCChannel&);
 
     void handle_user_input_in_channel(const String& channel_name, const String&);
     void handle_user_input_in_query(const String& query_name, const String&);
@@ -75,13 +87,16 @@ public:
 
     void add_server_message(const String&);
 
-    const char* class_name() const override { return "IRCClient"; }
-
 private:
     struct Message {
         String prefix;
         String command;
         Vector<String> arguments;
+    };
+
+    enum class PrivmsgOrNotice {
+        Privmsg,
+        Notice,
     };
 
     void receive_from_server();
@@ -106,7 +121,7 @@ private:
     void handle_rpl_topicwhotime(const Message&);
     void handle_rpl_endofnames(const Message&);
     void handle_rpl_namreply(const Message&);
-    void handle_privmsg(const Message&);
+    void handle_privmsg_or_notice(const Message&, PrivmsgOrNotice);
     void handle_nick(const Message&);
     void handle(const Message&);
     void handle_user_command(const String&);
@@ -120,8 +135,8 @@ private:
 
     String m_nickname;
     OwnPtr<CNotifier> m_notifier;
-    HashMap<String, RefPtr<IRCChannel>> m_channels;
-    HashMap<String, RefPtr<IRCQuery>> m_queries;
+    HashMap<String, RefPtr<IRCChannel>, CaseInsensitiveStringTraits> m_channels;
+    HashMap<String, RefPtr<IRCQuery>, CaseInsensitiveStringTraits> m_queries;
 
     Vector<IRCWindow*> m_windows;
 

@@ -13,10 +13,13 @@ public:
         Invalid = 0,
         Quit,
         Timer,
+        NotifierRead,
+        NotifierWrite,
         DeferredDestroy,
         DeferredInvoke,
         ChildAdded,
         ChildRemoved,
+        Custom,
     };
 
     CEvent() {}
@@ -61,6 +64,36 @@ private:
     int m_timer_id;
 };
 
+class CNotifierReadEvent final : public CEvent {
+public:
+    explicit CNotifierReadEvent(int fd)
+        : CEvent(CEvent::NotifierRead)
+        , m_fd(fd)
+    {
+    }
+    ~CNotifierReadEvent() {}
+
+    int fd() const { return m_fd; }
+
+private:
+    int m_fd;
+};
+
+class CNotifierWriteEvent final : public CEvent {
+public:
+    explicit CNotifierWriteEvent(int fd)
+        : CEvent(CEvent::NotifierWrite)
+        , m_fd(fd)
+    {
+    }
+    ~CNotifierWriteEvent() {}
+
+    int fd() const { return m_fd; }
+
+private:
+    int m_fd;
+};
+
 class CChildEvent final : public CEvent {
 public:
     CChildEvent(Type, CObject& child);
@@ -71,4 +104,23 @@ public:
 
 private:
     WeakPtr<CObject> m_child;
+};
+
+class CCustomEvent : public CEvent {
+public:
+    CCustomEvent(int custom_type, void* data = nullptr)
+        : CEvent(CEvent::Type::Custom)
+        , m_custom_type(custom_type)
+        , m_data(data)
+    {
+    }
+    ~CCustomEvent() {}
+
+    int custom_type() const { return m_custom_type; }
+    void* data() { return m_data; }
+    const void* data() const { return m_data; }
+
+private:
+    int m_custom_type { 0 };
+    void* m_data { nullptr };
 };

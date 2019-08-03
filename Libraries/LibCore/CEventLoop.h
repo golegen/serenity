@@ -6,11 +6,11 @@
 #include <AK/Vector.h>
 #include <AK/WeakPtr.h>
 #include <LibCore/CLock.h>
+#include <LibCore/CEvent.h>
 #include <sys/select.h>
 #include <sys/time.h>
 #include <time.h>
 
-class CEvent;
 class CObject;
 class CNotifier;
 
@@ -30,7 +30,7 @@ public:
     // this should really only be used for integrating with other event loops
     void pump(WaitMode = WaitMode::WaitForEvents);
 
-    void post_event(CObject& receiver, OwnPtr<CEvent>&&);
+    void post_event(CObject& receiver, NonnullOwnPtr<CEvent>&&);
 
     static CEventLoop& main();
     static CEventLoop& current();
@@ -45,15 +45,12 @@ public:
 
     void quit(int);
 
-    virtual void take_pending_events_from(CEventLoop& other)
+    void take_pending_events_from(CEventLoop& other)
     {
         m_queued_events.append(move(other.m_queued_events));
     }
 
-protected:
-    virtual void add_file_descriptors_for_select(fd_set&, int& max_fd) { UNUSED_PARAM(max_fd); }
-    virtual void process_file_descriptors_after_select(const fd_set&) {}
-    virtual void do_processing() {}
+    static void wake();
 
 private:
     void wait_for_event(WaitMode);
@@ -61,7 +58,7 @@ private:
 
     struct QueuedEvent {
         WeakPtr<CObject> receiver;
-        OwnPtr<CEvent> event;
+        NonnullOwnPtr<CEvent> event;
     };
 
     Vector<QueuedEvent, 64> m_queued_events;
@@ -69,12 +66,14 @@ private:
     bool m_exit_requested { false };
     int m_exit_code { 0 };
 
+    static int s_wake_pipe_fds[2];
+
     CLock m_lock;
 
     struct EventLoopTimer {
         int timer_id { 0 };
         int interval { 0 };
-        timeval fire_time;
+        timeval fire_time { 0, 0 };
         bool should_reload { false };
         WeakPtr<CObject> owner;
 
@@ -82,7 +81,7 @@ private:
         bool has_expired(const timeval& now) const;
     };
 
-    static HashMap<int, OwnPtr<EventLoopTimer>>* s_timers;
+    static HashMap<int, NonnullOwnPtr<EventLoopTimer>>* s_timers;
     static int s_next_timer_id;
 
     static HashTable<CNotifier*>* s_notifiers;

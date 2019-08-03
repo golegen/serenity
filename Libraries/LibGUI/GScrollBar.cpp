@@ -1,8 +1,8 @@
 #include <LibGUI/GPainter.h>
 #include <LibGUI/GScrollBar.h>
-#include <SharedGraphics/CharacterBitmap.h>
-#include <SharedGraphics/GraphicsBitmap.h>
-#include <SharedGraphics/StylePainter.h>
+#include <LibDraw/CharacterBitmap.h>
+#include <LibDraw/GraphicsBitmap.h>
+#include <LibDraw/StylePainter.h>
 
 static const char* s_up_arrow_bitmap_data = {
     "         "
@@ -71,9 +71,9 @@ GScrollBar::GScrollBar(Orientation orientation, GWidget* parent)
         s_right_arrow_bitmap = &CharacterBitmap::create_from_ascii(s_right_arrow_bitmap_data, 9, 9).leak_ref();
 
     if (m_orientation == Orientation::Vertical) {
-        set_preferred_size({ 15, 0 });
+        set_preferred_size(15, 0);
     } else {
-        set_preferred_size({ 0, 15 });
+        set_preferred_size(0, 15);
     }
 
     m_automatic_scrolling_timer.set_interval(100);

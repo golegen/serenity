@@ -1,7 +1,7 @@
 #pragma once
 
 #include <AK/HashMap.h>
-#include <SharedGraphics/GraphicsBitmap.h>
+#include <LibDraw/GraphicsBitmap.h>
 
 class GIconImpl : public RefCounted<GIconImpl> {
 public:
@@ -29,7 +29,8 @@ public:
 
     GIcon& operator=(const GIcon& other)
     {
-        m_impl = other.m_impl.copy_ref();
+        if (this != &other)
+            m_impl = other.m_impl;
         return *this;
     }
 

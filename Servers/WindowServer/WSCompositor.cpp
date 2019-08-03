@@ -4,9 +4,9 @@
 #include "WSScreen.h"
 #include "WSWindow.h"
 #include "WSWindowManager.h"
-#include <SharedGraphics/Font.h>
-#include <SharedGraphics/PNGLoader.h>
-#include <SharedGraphics/Painter.h>
+#include <LibDraw/Font.h>
+#include <LibDraw/PNGLoader.h>
+#include <LibDraw/Painter.h>
 
 // #define COMPOSITOR_DEBUG
 
@@ -249,7 +249,7 @@ bool WSCompositor::set_wallpaper(const String& path, Function<void(bool)>&& call
         return 0;
     },
         context.leak_ptr());
-    ASSERT(rc == 0);
+    ASSERT(rc > 0);
 
     return true;
 }

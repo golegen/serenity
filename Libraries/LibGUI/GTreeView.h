@@ -3,12 +3,12 @@
 #include <LibGUI/GAbstractView.h>
 
 class GTreeView : public GAbstractView {
+    C_OBJECT(GTreeView)
 public:
     explicit GTreeView(GWidget*);
     virtual ~GTreeView() override;
 
     virtual void scroll_into_view(const GModelIndex&, Orientation);
-    virtual const char* class_name() const override { return "GTreeView"; }
 
 protected:
     virtual void paint_event(GPaintEvent&) override;
@@ -35,7 +35,7 @@ private:
 
     MetadataForIndex& ensure_metadata_for_index(const GModelIndex&) const;
 
-    mutable HashMap<void*, OwnPtr<MetadataForIndex>> m_view_metadata;
+    mutable HashMap<void*, NonnullOwnPtr<MetadataForIndex>> m_view_metadata;
 
     RefPtr<GraphicsBitmap> m_expand_bitmap;
     RefPtr<GraphicsBitmap> m_collapse_bitmap;

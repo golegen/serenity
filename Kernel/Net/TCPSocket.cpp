@@ -3,6 +3,7 @@
 #include <Kernel/Net/Routing.h>
 #include <Kernel/Net/TCP.h>
 #include <Kernel/Net/TCPSocket.h>
+#include <Kernel/FileSystem/FileDescription.h>
 #include <Kernel/Process.h>
 
 Lockable<HashMap<u16, TCPSocket*>>& TCPSocket::sockets_by_port()
@@ -161,7 +162,8 @@ KResult TCPSocket::protocol_connect(FileDescription& description, ShouldBlock sh
     m_state = State::Connecting;
 
     if (should_block == ShouldBlock::Yes) {
-        current->block(Thread::BlockedConnect, description);
+        if (current->block<Thread::ConnectBlocker>(description) == Thread::BlockResult::InterruptedBySignal)
+            return KResult(-EINTR);
         ASSERT(is_connected());
         return KSuccess;
     }

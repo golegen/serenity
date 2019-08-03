@@ -4,19 +4,12 @@
 #include <AK/LogStream.h>
 #include <AK/Types.h>
 
-#ifdef __clang__
-#    define CONSUMABLE(initial_state) __attribute__((consumable(initial_state)))
-#    define CALLABLE_WHEN(...) __attribute__((callable_when(__VA_ARGS__)))
-#    define SET_TYPESTATE(state) __attribute__((set_typestate(state)))
-#    define RETURN_TYPESTATE(state) __attribute__((return_typestate(state)))
-#else
-#    define CONSUMABLE(initial_state)
-#    define CALLABLE_WHEN(state)
-#    define SET_TYPESTATE(state)
-#    define RETURN_TYPESTATE(state)
-#endif
-
 namespace AK {
+
+template<typename T>
+class OwnPtr;
+template<typename T>
+class RefPtr;
 
 template<typename T>
 inline void ref_if_not_null(T* ptr)
@@ -35,9 +28,9 @@ inline void deref_if_not_null(T* ptr)
 template<typename T>
 class CONSUMABLE(unconsumed) NonnullRefPtr {
 public:
-    enum AdoptTag {
-        Adopt
-    };
+    typedef T ElementType;
+
+    enum AdoptTag { Adopt };
 
     RETURN_TYPESTATE(unconsumed)
     NonnullRefPtr(const T& object)
@@ -55,11 +48,6 @@ public:
     RETURN_TYPESTATE(unconsumed)
     NonnullRefPtr(AdoptTag, T& object)
         : m_ptr(&object)
-    {
-    }
-    RETURN_TYPESTATE(unconsumed)
-    NonnullRefPtr(NonnullRefPtr& other)
-        : m_ptr(&other.copy_ref().leak_ref())
     {
     }
     RETURN_TYPESTATE(unconsumed)
@@ -98,6 +86,18 @@ public:
 #endif
     }
 
+    template<typename U>
+    NonnullRefPtr(const OwnPtr<U>&) = delete;
+    template<typename U>
+    NonnullRefPtr& operator=(const OwnPtr<U>&) = delete;
+
+    template<typename U>
+    NonnullRefPtr(const RefPtr<U>&) = delete;
+    template<typename U>
+    NonnullRefPtr& operator=(const RefPtr<U>&) = delete;
+    NonnullRefPtr(const RefPtr<T>&) = delete;
+    NonnullRefPtr& operator=(const RefPtr<T>&) = delete;
+
     NonnullRefPtr& operator=(const NonnullRefPtr& other)
     {
         if (m_ptr != other.m_ptr) {
@@ -111,7 +111,7 @@ public:
     template<typename U>
     NonnullRefPtr& operator=(const NonnullRefPtr<U>& other)
     {
-        if (m_ptr != other.m_ptr) {
+        if (m_ptr != other.ptr()) {
             deref_if_not_null(m_ptr);
             m_ptr = const_cast<T*>(static_cast<const T*>(other.ptr()));
             m_ptr->ref();
@@ -133,43 +133,36 @@ public:
     {
         if (this != static_cast<void*>(&other)) {
             deref_if_not_null(m_ptr);
-            m_ptr = &other.leak_ref();
+            m_ptr = static_cast<T*>(&other.leak_ref());
         }
         return *this;
     }
 
-    NonnullRefPtr& operator=(T& object)
+    NonnullRefPtr& operator=(const T& object)
     {
-        if (m_ptr != &object)
+        if (m_ptr != &object) {
             deref_if_not_null(m_ptr);
-        m_ptr = &object;
-        m_ptr->ref();
+            m_ptr = const_cast<T*>(&object);
+            m_ptr->ref();
+        }
         return *this;
     }
 
-    CALLABLE_WHEN(unconsumed)
-    NonnullRefPtr copy_ref() const
-    {
-        return NonnullRefPtr(*m_ptr);
-    }
-
-    CALLABLE_WHEN(unconsumed)
+    [[nodiscard]] CALLABLE_WHEN(unconsumed)
     SET_TYPESTATE(consumed)
     T& leak_ref()
     {
         ASSERT(m_ptr);
-        T* leakedPtr = m_ptr;
-        m_ptr = nullptr;
-        return *leakedPtr;
+        return *exchange(m_ptr, nullptr);
     }
 
-    CALLABLE_WHEN(unconsumed)
+    CALLABLE_WHEN("unconsumed","unknown")
     T* ptr()
     {
         ASSERT(m_ptr);
         return m_ptr;
     }
-    CALLABLE_WHEN(unconsumed)
+    CALLABLE_WHEN("unconsumed","unknown")
     const T* ptr() const
     {
         ASSERT(m_ptr);

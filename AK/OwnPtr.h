@@ -1,9 +1,6 @@
 #pragma once
 
-#include <AK/LogStream.h>
-#include <AK/StdLibExtras.h>
-#include <AK/Traits.h>
-#include <AK/Types.h>
+#include <AK/NonnullOwnPtr.h>
 
 namespace AK {
 
@@ -17,6 +14,12 @@ public:
     }
     OwnPtr(OwnPtr&& other)
         : m_ptr(other.leak_ptr())
+    {
+    }
+
+    template<typename U>
+    OwnPtr(NonnullOwnPtr<U>&& other)
+        : m_ptr(static_cast<T*>(other.leak_ptr()))
     {
     }
     template<typename U>
@@ -36,6 +39,30 @@ public:
 #endif
     }
 
+    OwnPtr(const OwnPtr&) = delete;
+    template<typename U>
+    OwnPtr(const OwnPtr<U>&) = delete;
+    OwnPtr& operator=(const OwnPtr&) = delete;
+    template<typename U>
+    OwnPtr& operator=(const OwnPtr<U>&) = delete;
+
+    template<typename U>
+    OwnPtr(const NonnullOwnPtr<U>&) = delete;
+    template<typename U>
+    OwnPtr& operator=(const NonnullOwnPtr<U>&) = delete;
+    template<typename U>
+    OwnPtr(const RefPtr<U>&) = delete;
+    template<typename U>
+    OwnPtr(const NonnullRefPtr<U>&) = delete;
+    template<typename U>
+    OwnPtr(const WeakPtr<U>&) = delete;
+    template<typename U>
+    OwnPtr& operator=(const RefPtr<U>&) = delete;
+    template<typename U>
+    OwnPtr& operator=(const NonnullRefPtr<U>&) = delete;
+    template<typename U>
+    OwnPtr& operator=(const WeakPtr<U>&) = delete;
+
     OwnPtr& operator=(OwnPtr&& other)
     {
         if (this != &other) {
@@ -52,6 +79,15 @@ public:
             delete m_ptr;
             m_ptr = other.leak_ptr();
         }
+        return *this;
+    }
+
+    template<typename U>
+    OwnPtr& operator=(NonnullOwnPtr<U>&& other)
+    {
+        ASSERT(m_ptr != other.ptr());
+        delete m_ptr;
+        m_ptr = other.leak_ptr();
         return *this;
     }
 
@@ -79,19 +115,37 @@ public:
 
     T* leak_ptr()
     {
-        T* leakedPtr = m_ptr;
+        T* leaked_ptr = m_ptr;
         m_ptr = nullptr;
-        return leakedPtr;
+        return leaked_ptr;
     }
 
     T* ptr() { return m_ptr; }
     const T* ptr() const { return m_ptr; }
 
-    T* operator->() { return m_ptr; }
-    const T* operator->() const { return m_ptr; }
+    T* operator->()
+    {
+        ASSERT(m_ptr);
+        return m_ptr;
+    }
 
-    T& operator*() { return *m_ptr; }
-    const T& operator*() const { return *m_ptr; }
+    const T* operator->() const
+    {
+        ASSERT(m_ptr);
+        return m_ptr;
+    }
+
+    T& operator*()
+    {
+        ASSERT(m_ptr);
+        return *m_ptr;
+    }
+
+    const T& operator*() const
+    {
+        ASSERT(m_ptr);
+        return *m_ptr;
+    }
 
     operator const T*() const { return m_ptr; }
     operator T*() { return m_ptr; }
@@ -101,13 +155,6 @@ public:
 private:
     T* m_ptr = nullptr;
 };
-
-template<class T, class... Args>
-inline OwnPtr<T>
-make(Args&&... args)
-{
-    return OwnPtr<T>(new T(AK::forward<Args>(args)...));
-}
 
 template<typename T>
 struct Traits<OwnPtr<T>> : public GenericTraits<OwnPtr<T>> {
@@ -124,5 +171,4 @@ inline const LogStream& operator<<(const LogStream& stream, const OwnPtr<T>& val
 
 }
 
-using AK::make;
 using AK::OwnPtr;

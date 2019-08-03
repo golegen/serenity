@@ -1,3 +1,5 @@
+#include <AK/ELF/ELFLoader.h>
+#include <AK/StringBuilder.h>
 #include <Kernel/FileSystem/FileDescription.h>
 #include <Kernel/Process.h>
 #include <Kernel/Scheduler.h>
@@ -15,9 +17,6 @@ HashTable<Thread*>& thread_table()
         table = new HashTable<Thread*>;
     return *table;
 }
-
-InlineLinkedList<Thread>* g_runnable_threads;
-InlineLinkedList<Thread>* g_nonrunnable_threads;
 
 static const u32 default_kernel_stack_size = 65536;
 static const u32 default_userspace_stack_size = 65536;
@@ -75,7 +74,7 @@ Thread::Thread(Process& process)
     if (m_process.pid() != 0) {
         InterruptDisabler disabler;
         thread_table().set(this);
-        set_thread_list(g_nonrunnable_threads);
+        Scheduler::init_thread(*this);
     }
 }
 
@@ -85,8 +84,6 @@ Thread::~Thread()
     kfree_aligned(m_fpu_state);
     {
         InterruptDisabler disabler;
-        if (m_thread_list)
-            m_thread_list->remove(this);
         thread_table().remove(this);
     }
 
@@ -95,11 +92,19 @@ Thread::~Thread()
 
     if (selector())
         gdt_free_entry(selector());
+
+    if (m_userspace_stack_region)
+        m_process.deallocate_region(*m_userspace_stack_region);
+
+    if (m_kernel_stack_region)
+        m_process.deallocate_region(*m_kernel_stack_region);
+
+    if (m_kernel_stack_for_signal_handler_region)
+        m_process.deallocate_region(*m_kernel_stack_for_signal_handler_region);
 }
 
 void Thread::unblock()
 {
-    m_blocked_description = nullptr;
     if (current == this) {
         set_state(Thread::Running);
         return;
@@ -108,43 +113,32 @@ void Thread::unblock()
     set_state(Thread::Runnable);
 }
 
-void Thread::snooze_until(Alarm& alarm)
+void Thread::block_helper()
 {
-    m_snoozing_alarm = &alarm;
-    block(Thread::BlockedSnoozing);
-    Scheduler::yield();
-}
-
-void Thread::block(Thread::State new_state)
-{
+    // This function mostly exists to avoid circular header dependencies. If
+    // anything needs adding, think carefully about whether it belongs in
+    // block() instead. Remember that we're unlocking here, so be very careful
+    // about altering any state once we're unlocked!
     bool did_unlock = process().big_lock().unlock_if_locked();
-    if (state() != Thread::Running) {
-        kprintf("Thread::block: %s(%u) block(%u/%s) with state=%u/%s\n", process().name().characters(), process().pid(), new_state, to_string(new_state), state(), to_string(state()));
-    }
-    ASSERT(state() == Thread::Running);
-    m_was_interrupted_while_blocked = false;
-    set_state(new_state);
     Scheduler::yield();
     if (did_unlock)
         process().big_lock().lock();
 }
 
-void Thread::block(Thread::State new_state, FileDescription& description)
-{
-    m_blocked_description = &description;
-    block(new_state);
-}
-
-void Thread::sleep(u32 ticks)
+u64 Thread::sleep(u32 ticks)
 {
     ASSERT(state() == Thread::Running);
-    current->set_wakeup_time(g_uptime + ticks);
-    current->block(Thread::BlockedSleep);
+    u64 wakeup_time = g_uptime + ticks;
+    auto ret = current->block<Thread::SleepBlocker>(wakeup_time);
+    if (wakeup_time > g_uptime) {
+        ASSERT(ret == Thread::BlockResult::InterruptedBySignal);
+    }
+    return wakeup_time;
 }
 
-const char* to_string(Thread::State state)
+const char* Thread::state_string() const
 {
-    switch (state) {
+    switch (state()) {
     case Thread::Invalid:
         return "Invalid";
     case Thread::Runnable:
@@ -161,50 +155,39 @@ const char* to_string(Thread::State state)
         return "Skip1";
     case Thread::Skip0SchedulerPasses:
         return "Skip0";
-    case Thread::BlockedSleep:
-        return "Sleep";
-    case Thread::BlockedWait:
-        return "Wait";
-    case Thread::BlockedRead:
-        return "Read";
-    case Thread::BlockedWrite:
-        return "Write";
-    case Thread::BlockedSignal:
-        return "Signal";
-    case Thread::BlockedSelect:
-        return "Select";
-    case Thread::BlockedLurking:
-        return "Lurking";
-    case Thread::BlockedConnect:
-        return "Connect";
-    case Thread::BlockedReceive:
-        return "Receive";
-    case Thread::BlockedSnoozing:
-        return "Snoozing";
+    case Thread::Blocked:
+        ASSERT(!m_blockers.is_empty());
+        return m_blockers.first()->state_string();
     }
-    kprintf("to_string(Thread::State): Invalid state: %u\n", state);
+    kprintf("to_string(Thread::State): Invalid state: %u\n", state());
     ASSERT_NOT_REACHED();
     return nullptr;
 }
 
 void Thread::finalize()
 {
+    ASSERT(current == g_finalizer);
+
     dbgprintf("Finalizing Thread %u in %s(%u)\n", tid(), m_process.name().characters(), pid());
     set_state(Thread::State::Dead);
 
-    m_blocked_description = nullptr;
-
-    if (this == &m_process.main_thread())
+    if (this == &m_process.main_thread()) {
         m_process.finalize();
+        return;
+    }
+
+    delete this;
 }
 
 void Thread::finalize_dying_threads()
 {
+    ASSERT(current == g_finalizer);
     Vector<Thread*, 32> dying_threads;
     {
         InterruptDisabler disabler;
         for_each_in_state(Thread::State::Dying, [&](Thread& thread) {
             dying_threads.append(&thread);
+            return IterationDecision::Continue;
         });
     }
     for (auto* thread : dying_threads)
@@ -224,14 +207,20 @@ bool Thread::tick()
 void Thread::send_signal(u8 signal, Process* sender)
 {
     ASSERT(signal < 32);
+    InterruptDisabler disabler;
+
+    // FIXME: Figure out what to do for masked signals. Should we also ignore them here?
+    if (should_ignore_signal(signal)) {
+        dbg() << "signal " << signal << " was ignored by " << process();
+        return;
+    }
 
     if (sender)
         dbgprintf("signal: %s(%u) sent %d to %s(%u)\n", sender->name().characters(), sender->pid(), signal, process().name().characters(), pid());
     else
         dbgprintf("signal: kernel sent %d to %s(%u)\n", signal, process().name().characters(), pid());
 
-    InterruptDisabler disabler;
-    m_pending_signals |= 1 << signal;
+    m_pending_signals |= 1 << (signal - 1);
 }
 
 bool Thread::has_unmasked_pending_signals() const
@@ -245,9 +234,9 @@ ShouldUnblockThread Thread::dispatch_one_pending_signal()
     u32 signal_candidates = m_pending_signals & ~m_signal_mask;
     ASSERT(signal_candidates);
 
-    u8 signal = 0;
+    u8 signal = 1;
     for (; signal < 32; ++signal) {
-        if (signal_candidates & (1 << signal)) {
+        if (signal_candidates & (1 << (signal - 1))) {
             break;
         }
     }
@@ -307,10 +296,21 @@ DefaultSignalAction default_signal_action(u8 signal)
     ASSERT_NOT_REACHED();
 }
 
+bool Thread::should_ignore_signal(u8 signal) const
+{
+    ASSERT(signal < 32);
+    auto& action = m_signal_action_data[signal];
+    if (action.handler_or_sigaction.is_null())
+        return default_signal_action(signal) == DefaultSignalAction::Ignore;
+    if (action.handler_or_sigaction.as_ptr() == SIG_IGN)
+        return true;
+    return false;
+}
+
 ShouldUnblockThread Thread::dispatch_signal(u8 signal)
 {
     ASSERT_INTERRUPTS_DISABLED();
-    ASSERT(signal < 32);
+    ASSERT(signal > 0 && signal <= 32);
 
 #ifdef SIGNAL_DEBUG
     kprintf("dispatch_signal %s(%u) <- %u\n", process().name().characters(), pid(), signal);
@@ -321,7 +321,7 @@ ShouldUnblockThread Thread::dispatch_signal(u8 signal)
     ASSERT(!(action.flags & SA_SIGINFO));
 
     // Mark this signal as handled.
-    m_pending_signals &= ~(1 << signal);
+    m_pending_signals &= ~(1 << (signal - 1));
 
     if (signal == SIGSTOP) {
         set_state(Stopped);
@@ -337,14 +337,17 @@ ShouldUnblockThread Thread::dispatch_signal(u8 signal)
         case DefaultSignalAction::Stop:
             set_state(Stopped);
             return ShouldUnblockThread::No;
-        case DefaultSignalAction::DumpCore:
+        case DefaultSignalAction::DumpCore: {
+            ProcessInspectionHandle handle(process());
+            dbg() << "Dumping \"Core\" for " << process();
+            dbg() << process().backtrace(handle);
+        }
+            [[fallthrough]];
         case DefaultSignalAction::Terminate:
             m_process.terminate_due_to_signal(signal);
             return ShouldUnblockThread::No;
         case DefaultSignalAction::Ignore:
-            if (state() == BlockedSignal)
-                set_state(Runnable);
-            return ShouldUnblockThread::No;
+            ASSERT_NOT_REACHED();
         case DefaultSignalAction::Continue:
             return ShouldUnblockThread::Yes;
         }
@@ -361,9 +364,9 @@ ShouldUnblockThread Thread::dispatch_signal(u8 signal)
     u32 old_signal_mask = m_signal_mask;
     u32 new_signal_mask = action.mask;
     if (action.flags & SA_NODEFER)
-        new_signal_mask &= ~(1 << signal);
+        new_signal_mask &= ~(1 << (signal - 1));
     else
-        new_signal_mask |= 1 << signal;
+        new_signal_mask |= 1 << (signal - 1);
 
     m_signal_mask |= new_signal_mask;
 
@@ -375,7 +378,6 @@ ShouldUnblockThread Thread::dispatch_signal(u8 signal)
     bool interrupting_in_kernel = (ret_cs & 3) == 0;
 
     ProcessPagingScope paging_scope(m_process);
-    m_process.create_signal_trampolines_if_needed();
 
     if (interrupting_in_kernel) {
 #ifdef SIGNAL_DEBUG
@@ -432,9 +434,9 @@ ShouldUnblockThread Thread::dispatch_signal(u8 signal)
     push_value_on_stack(signal);
 
     if (interrupting_in_kernel)
-        push_value_on_stack(m_process.m_return_to_ring0_from_signal_trampoline.get());
+        push_value_on_stack(g_return_to_ring0_from_signal_trampoline.get());
     else
-        push_value_on_stack(m_process.m_return_to_ring3_from_signal_trampoline.get());
+        push_value_on_stack(g_return_to_ring3_from_signal_trampoline.get());
 
     ASSERT((m_tss.esp % 16) == 0);
 
@@ -510,9 +512,9 @@ void Thread::make_userspace_stack_for_main_thread(Vector<String> arguments, Vect
 
 void Thread::make_userspace_stack_for_secondary_thread(void* argument)
 {
-    auto* region = m_process.allocate_region(VirtualAddress(), default_userspace_stack_size, String::format("Stack (Thread %d)", tid()));
-    ASSERT(region);
-    m_tss.esp = region->vaddr().offset(default_userspace_stack_size).get();
+    m_userspace_stack_region = m_process.allocate_region(VirtualAddress(), default_userspace_stack_size, String::format("Stack (Thread %d)", tid()));
+    ASSERT(m_userspace_stack_region);
+    m_tss.esp = m_userspace_stack_region->vaddr().offset(default_userspace_stack_size).get();
 
     // NOTE: The stack needs to be 16-byte aligned.
     push_value_on_stack((u32)argument);
@@ -530,23 +532,8 @@ Thread* Thread::clone(Process& process)
     return clone;
 }
 
-KResult Thread::wait_for_connect(FileDescription& description)
-{
-    ASSERT(description.is_socket());
-    auto& socket = *description.socket();
-    if (socket.is_connected())
-        return KSuccess;
-    block(Thread::State::BlockedConnect, description);
-    Scheduler::yield();
-    if (!socket.is_connected())
-        return KResult(-ECONNREFUSED);
-    return KSuccess;
-}
-
 void Thread::initialize()
 {
-    g_runnable_threads = new InlineLinkedList<Thread>;
-    g_nonrunnable_threads = new InlineLinkedList<Thread>;
     Scheduler::initialize();
 }
 
@@ -566,23 +553,53 @@ bool Thread::is_thread(void* ptr)
     return thread_table().contains((Thread*)ptr);
 }
 
-void Thread::set_thread_list(InlineLinkedList<Thread>* thread_list)
-{
-    ASSERT_INTERRUPTS_DISABLED();
-    ASSERT(pid() != 0);
-    if (m_thread_list == thread_list)
-        return;
-    if (m_thread_list)
-        m_thread_list->remove(this);
-    if (thread_list)
-        thread_list->append(this);
-    m_thread_list = thread_list;
-}
-
 void Thread::set_state(State new_state)
 {
     InterruptDisabler disabler;
+    if (new_state == Blocked) {
+        // we should always have a Blocker while blocked
+        ASSERT(!m_blockers.is_empty());
+    }
+
     m_state = new_state;
-    if (m_process.pid() != 0)
-        set_thread_list(thread_list_for_state(new_state));
+    if (m_process.pid() != 0) {
+        Scheduler::update_state_for_thread(*this);
+    }
+}
+
+String Thread::backtrace(ProcessInspectionHandle&) const
+{
+    auto& process = const_cast<Process&>(this->process());
+    ProcessPagingScope paging_scope(process);
+    struct RecognizedSymbol {
+        u32 address;
+        const KSym* ksym;
+    };
+    StringBuilder builder;
+    Vector<RecognizedSymbol, 64> recognized_symbols;
+    recognized_symbols.append({ tss().eip, ksymbolicate(tss().eip) });
+    for (u32* stack_ptr = (u32*)frame_ptr(); process.validate_read_from_kernel(VirtualAddress((u32)stack_ptr)); stack_ptr = (u32*)*stack_ptr) {
+        u32 retaddr = stack_ptr[1];
+        recognized_symbols.append({ retaddr, ksymbolicate(retaddr) });
+    }
+
+    for (auto& symbol : recognized_symbols) {
+        if (!symbol.address)
+            break;
+        if (!symbol.ksym) {
+#ifdef EXPENSIVE_USERSPACE_STACKS
+            if (!Scheduler::is_active() && process.elf_loader() && process.elf_loader()->has_symbols())
+                builder.appendf("%p  %s\n", symbol.address, process.elf_loader()->symbolicate(symbol.address).characters());
+            else
+#endif
+                builder.appendf("%p\n", symbol.address);
+            continue;
+        }
+        unsigned offset = symbol.address - symbol.ksym->address;
+        if (symbol.ksym->address == ksym_highest_address && offset > 4096)
+            builder.appendf("%p\n", symbol.address);
+        else
+            builder.appendf("%p  %s +%u\n", symbol.address, symbol.ksym->name, offset);
+    }
+    return builder.to_string();
 }

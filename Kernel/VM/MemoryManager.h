@@ -17,7 +17,6 @@
 #include <Kernel/VM/PhysicalRegion.h>
 #include <Kernel/VM/Region.h>
 #include <Kernel/VM/VMObject.h>
-#include <Kernel/VirtualAddress.h>
 
 #define PAGE_ROUND_UP(x) ((((u32)(x)) + PAGE_SIZE - 1) & (~(PAGE_SIZE - 1)))
 
@@ -41,7 +40,7 @@ class MemoryManager {
     friend ByteBuffer procfs$memstat(InodeIdentifier);
 
 public:
-    [[gnu::pure]] static MemoryManager& the();
+    static MemoryManager& the();
 
     static void initialize();
 
@@ -71,8 +70,9 @@ public:
 
     void map_for_kernel(VirtualAddress, PhysicalAddress);
 
-    RefPtr<Region> allocate_kernel_region(size_t, String&& name);
-    void map_region_at_address(PageDirectory&, Region&, VirtualAddress, bool user_accessible);
+    RefPtr<Region> allocate_kernel_region(size_t, const StringView& name, bool user_accessible = false);
+    RefPtr<Region> allocate_user_accessible_kernel_region(size_t, const StringView& name);
+    void map_region_at_address(PageDirectory&, Region&, VirtualAddress);
 
     unsigned user_physical_pages() const { return m_user_physical_pages; }
     unsigned user_physical_pages_used() const { return m_user_physical_pages_used; }
@@ -88,7 +88,7 @@ private:
     void register_region(Region&);
     void unregister_region(Region&);
 
-    void remap_region_page(Region&, unsigned page_index_in_region, bool user_allowed);
+    void remap_region_page(Region&, unsigned page_index_in_region);
 
     void initialize_paging();
     void flush_entire_tlb();

@@ -7,7 +7,7 @@
 #include "EraseTool.h"
 #include <LibGUI/GBoxLayout.h>
 #include <LibGUI/GButton.h>
-#include <SharedGraphics/PNGLoader.h>
+#include <LibDraw/PNGLoader.h>
 
 class ToolButton final : public GButton {
 public:
@@ -41,7 +41,7 @@ ToolboxWidget::ToolboxWidget(GWidget* parent)
     set_frame_shadow(FrameShadow::Raised);
 
     set_size_policy(SizePolicy::Fixed, SizePolicy::Fill);
-    set_preferred_size({ 48, 0 });
+    set_preferred_size(48, 0);
 
     set_layout(make<GBoxLayout>(Orientation::Vertical));
     layout()->set_margins({ 4, 4, 4, 4 });
@@ -49,11 +49,11 @@ ToolboxWidget::ToolboxWidget(GWidget* parent)
     auto add_tool = [&](const StringView& name, const StringView& icon_name, OwnPtr<Tool>&& tool) {
         auto* button = new ToolButton(name, this, move(tool));
         button->set_size_policy(SizePolicy::Fill, SizePolicy::Fixed);
-        button->set_preferred_size({ 0, 32 });
+        button->set_preferred_size(0, 32);
         button->set_checkable(true);
         button->set_exclusive(true);
 
-        button->set_icon(load_png(String::format("/res/icons/paintbrush/%s.png", icon_name.characters())));
+        button->set_icon(load_png(String::format("/res/icons/paintbrush/%s.png", String(icon_name).characters())));
 
         button->on_checked = [button](auto checked) {
             if (checked)

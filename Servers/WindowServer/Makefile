@@ -1,17 +1,6 @@
 include ../../Makefile.common
 
-SHAREDGRAPHICS_OBJS = \
-    ../../SharedGraphics/Painter.o \
-    ../../SharedGraphics/StylePainter.o \
-    ../../SharedGraphics/Font.o \
-    ../../SharedGraphics/Rect.o \
-    ../../SharedGraphics/GraphicsBitmap.o \
-    ../../SharedGraphics/CharacterBitmap.o \
-    ../../SharedGraphics/DisjointRectSet.o \
-    ../../SharedGraphics/Color.o \
-    ../../SharedGraphics/PNGLoader.o
-
-WINDOWSERVER_OBJS = \
+OBJS = \
     WSEventLoop.o \
     WSWindow.o \
     WSWindowManager.o \
@@ -27,18 +16,17 @@ WINDOWSERVER_OBJS = \
     WSButton.o \
     WSCPUMonitor.o \
     WSCompositor.o \
-    WSMenuBarKeeper.o \
+    WSMenuManager.o \
     main.o
 
 APP = WindowServer
-OBJS = $(SHAREDGRAPHICS_OBJS) $(WINDOWSERVER_OBJS)
 
 DEFINES += -DUSERLAND
 
 all: $(APP)
 
 $(APP): $(OBJS)
-	$(LD) -o $(APP) $(LDFLAGS) $(OBJS) -lc -lcore
+	$(LD) -o $(APP) $(LDFLAGS) $(OBJS) -lc -lcore -ldraw
 
 .cpp.o:
 	@echo "CXX $<"; $(CXX) $(CXXFLAGS) -o $@ -c $<

@@ -9,8 +9,9 @@
 #include <AK/WeakPtr.h>
 #include <AK/Weakable.h>
 #include <LibGUI/GShortcut.h>
-#include <SharedGraphics/GraphicsBitmap.h>
+#include <LibDraw/GraphicsBitmap.h>
 
+class GActionGroup;
 class GButton;
 class GMenuItem;
 class GWidget;
@@ -26,10 +27,6 @@ public:
     static NonnullRefPtr<GAction> create(const StringView& text, Function<void(GAction&)> callback, GWidget* widget = nullptr)
     {
         return adopt(*new GAction(text, move(callback), widget));
-    }
-    static NonnullRefPtr<GAction> create(const StringView& text, const StringView& custom_data, Function<void(GAction&)> callback, GWidget* widget = nullptr)
-    {
-        return adopt(*new GAction(text, custom_data, move(callback), widget));
     }
     static NonnullRefPtr<GAction> create(const StringView& text, RefPtr<GraphicsBitmap>&& icon, Function<void(GAction&)> callback, GWidget* widget = nullptr)
     {
@@ -50,7 +47,6 @@ public:
 
     String text() const { return m_text; }
     GShortcut shortcut() const { return m_shortcut; }
-    String custom_data() const { return m_custom_data; }
     const GraphicsBitmap* icon() const { return m_icon.ptr(); }
 
     Function<void(GAction&)> on_activation;
@@ -75,12 +71,14 @@ public:
     void register_menu_item(Badge<GMenuItem>, GMenuItem&);
     void unregister_menu_item(Badge<GMenuItem>, GMenuItem&);
 
+    const GActionGroup* group() const { return m_action_group.ptr(); }
+    void set_group(Badge<GActionGroup>, GActionGroup*);
+
 private:
     GAction(const StringView& text, Function<void(GAction&)> = nullptr, GWidget* = nullptr);
     GAction(const StringView& text, const GShortcut&, Function<void(GAction&)> = nullptr, GWidget* = nullptr);
     GAction(const StringView& text, const GShortcut&, RefPtr<GraphicsBitmap>&& icon, Function<void(GAction&)> = nullptr, GWidget* = nullptr);
     GAction(const StringView& text, RefPtr<GraphicsBitmap>&& icon, Function<void(GAction&)> = nullptr, GWidget* = nullptr);
-    GAction(const StringView& text, const StringView& custom_data = StringView(), Function<void(GAction&)> = nullptr, GWidget* = nullptr);
 
     template<typename Callback>
     void for_each_toolbar_button(Callback);
@@ -88,7 +86,6 @@ private:
     void for_each_menu_item(Callback);
 
     String m_text;
-    String m_custom_data;
     RefPtr<GraphicsBitmap> m_icon;
     GShortcut m_shortcut;
     bool m_enabled { true };
@@ -99,4 +96,5 @@ private:
     HashTable<GButton*> m_buttons;
     HashTable<GMenuItem*> m_menu_items;
     WeakPtr<GWidget> m_widget;
+    WeakPtr<GActionGroup> m_action_group;
 };

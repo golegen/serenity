@@ -10,11 +10,11 @@
 #include <AK/StdLibExtras.h>
 #include <AK/Vector.h>
 #include <LibCore/CTimer.h>
-#include <SharedGraphics/CharacterBitmap.h>
-#include <SharedGraphics/Font.h>
-#include <SharedGraphics/PNGLoader.h>
-#include <SharedGraphics/Painter.h>
-#include <SharedGraphics/StylePainter.h>
+#include <LibDraw/CharacterBitmap.h>
+#include <LibDraw/Font.h>
+#include <LibDraw/PNGLoader.h>
+#include <LibDraw/Painter.h>
+#include <LibDraw/StylePainter.h>
 #include <WindowServer/WSAPITypes.h>
 #include <WindowServer/WSButton.h>
 #include <WindowServer/WSClientConnection.h>
@@ -89,7 +89,7 @@ WSWindowManager::WSWindowManager()
             return;
         case 300:
             if (fork() == 0) {
-                execl("/bin/shutdown", "/bin/shutdown", "-n", nullptr);
+                execl("/bin/SystemDialog", "/bin/SystemDialog", "--shutdown", nullptr);
                 ASSERT_NOT_REACHED();
             }
             return;
@@ -102,7 +102,7 @@ WSWindowManager::WSWindowManager()
     // NOTE: This ensures that the system menu has the correct dimensions.
     set_current_menubar(nullptr);
 
-    m_menubar_keeper.setup();
+    m_menu_manager.setup();
 
     invalidate();
     WSCompositor::the().compose();
@@ -239,7 +239,7 @@ void WSWindowManager::set_current_menubar(WSMenuBar* menubar)
         ++index;
         return true;
     });
-    m_menubar_keeper.refresh();
+    m_menu_manager.refresh();
 }
 
 void WSWindowManager::add_window(WSWindow& window)
@@ -247,7 +247,7 @@ void WSWindowManager::add_window(WSWindow& window)
     m_windows_in_order.append(&window);
 
     if (window.is_fullscreen()) {
-        WSEventLoop::the().post_event(window, make<WSResizeEvent>(window.rect(), WSScreen::the().rect()));
+        CEventLoop::current().post_event(window, make<WSResizeEvent>(window.rect(), WSScreen::the().rect()));
         window.set_rect(WSScreen::the().rect());
     }
 
@@ -294,7 +294,7 @@ void WSWindowManager::remove_window(WSWindow& window)
         if (!(listener.wm_event_mask() & WSAPI_WMEventMask::WindowRemovals))
             return IterationDecision::Continue;
         if (window.client())
-            WSEventLoop::the().post_event(listener, make<WSWMWindowRemovedEvent>(window.client()->client_id(), window.window_id()));
+            CEventLoop::current().post_event(listener, make<WSWMWindowRemovedEvent>(window.client()->client_id(), window.window_id()));
         return IterationDecision::Continue;
     });
 }
@@ -304,7 +304,7 @@ void WSWindowManager::tell_wm_listener_about_window(WSWindow& listener, WSWindow
     if (!(listener.wm_event_mask() & WSAPI_WMEventMask::WindowStateChanges))
         return;
     if (window.client())
-        WSEventLoop::the().post_event(listener, make<WSWMWindowStateChangedEvent>(window.client()->client_id(), window.window_id(), window.title(), window.rect(), window.is_active(), window.type(), window.is_minimized()));
+        CEventLoop::current().post_event(listener, make<WSWMWindowStateChangedEvent>(window.client()->client_id(), window.window_id(), window.title(), window.rect(), window.is_active(), window.type(), window.is_minimized()));
 }
 
 void WSWindowManager::tell_wm_listener_about_window_rect(WSWindow& listener, WSWindow& window)
@@ -312,15 +312,15 @@ void WSWindowManager::tell_wm_listener_about_window_rect(WSWindow& listener, WSW
     if (!(listener.wm_event_mask() & WSAPI_WMEventMask::WindowRectChanges))
         return;
     if (window.client())
-        WSEventLoop::the().post_event(listener, make<WSWMWindowRectChangedEvent>(window.client()->client_id(), window.window_id(), window.rect()));
+        CEventLoop::current().post_event(listener, make<WSWMWindowRectChangedEvent>(window.client()->client_id(), window.window_id(), window.rect()));
 }
 
 void WSWindowManager::tell_wm_listener_about_window_icon(WSWindow& listener, WSWindow& window)
 {
     if (!(listener.wm_event_mask() & WSAPI_WMEventMask::WindowIconChanges))
         return;
-    if (window.client())
-        WSEventLoop::the().post_event(listener, make<WSWMWindowIconChangedEvent>(window.client()->client_id(), window.window_id(), window.icon_path()));
+    if (window.client() && window.icon().shared_buffer_id() != -1)
+        CEventLoop::current().post_event(listener, make<WSWMWindowIconBitmapChangedEvent>(window.client()->client_id(), window.window_id(), window.icon().shared_buffer_id(), window.icon().size()));
 }
 
 void WSWindowManager::tell_wm_listeners_window_state_changed(WSWindow& window)
@@ -392,7 +392,7 @@ void WSWindowManager::close_current_menu()
     if (m_current_menu && m_current_menu->menu_window())
         m_current_menu->menu_window()->set_visible(false);
     m_current_menu = nullptr;
-    m_menubar_keeper.refresh();
+    m_menu_manager.refresh();
 }
 
 void WSWindowManager::start_window_drag(WSWindow& window, const WSMouseEvent& event)
@@ -490,7 +490,7 @@ bool WSWindowManager::process_ongoing_window_resize(const WSMouseEvent& event, W
 #ifdef RESIZE_DEBUG
         dbg() << "[WM] Finish resizing WSWindow{" << m_resize_window << "}";
 #endif
-        WSEventLoop::the().post_event(*m_resize_window, make<WSResizeEvent>(m_resize_window->rect(), m_resize_window->rect()));
+        CEventLoop::current().post_event(*m_resize_window, make<WSResizeEvent>(m_resize_window->rect(), m_resize_window->rect()));
         invalidate(*m_resize_window);
         if (m_resize_window->rect().contains(event.position()))
             hovered_window = m_resize_window;
@@ -575,7 +575,7 @@ bool WSWindowManager::process_ongoing_window_resize(const WSMouseEvent& event, W
     dbg() << "[WM] Resizing, original: " << m_resize_window_original_rect << ", now: " << new_rect;
 #endif
     m_resize_window->set_rect(new_rect);
-    WSEventLoop::the().post_event(*m_resize_window, make<WSResizeEvent>(old_rect, new_rect));
+    CEventLoop::current().post_event(*m_resize_window, make<WSResizeEvent>(old_rect, new_rect));
     return true;
 }
 
@@ -629,7 +629,7 @@ void WSWindowManager::process_event_for_doubleclick(WSWindow& window, WSMouseEve
         // If the pointer moves too far, it's not a double click.
         if (elapsed_since_last_click < m_double_click_speed) {
 #if defined(DOUBLECLICK_DEBUG)
-            dbg() << "Transforming MouseUp to MouseDoubleClick!";
+            dbg() << "Transforming MouseUp to MouseDoubleClick (" << elapsed_since_last_click << " < " << m_double_click_speed << ")!";
 #endif
             event = WSMouseEvent(WSEvent::MouseDoubleClick, event.position(), event.buttons(), event.button(), event.modifiers(), event.wheel_delta());
             // invalidate this now we've delivered a doubleclick, otherwise
@@ -681,10 +681,12 @@ void WSWindowManager::process_mouse_event(WSMouseEvent& event, WSWindow*& hovere
         deliver_mouse_event(*window, translated_event);
     }
 
-    if (menubar_rect().contains(event.position())) {
-        m_menubar_keeper.event(event);
+    // FIXME: Now that the menubar has a dedicated window, is this special-casing really necessary?
+    if (!active_window_is_modal() && menubar_rect().contains(event.position())) {
+        m_menu_manager.event(event);
         return;
     }
+
     if (m_current_menu && m_current_menu->menu_window()) {
         auto& window = *m_current_menu->menu_window();
         bool event_is_inside_current_menu = window.rect().contains(event.position());
@@ -703,27 +705,45 @@ void WSWindowManager::process_mouse_event(WSMouseEvent& event, WSWindow*& hovere
 
     WSWindow* event_window_with_frame = nullptr;
 
-    for_each_visible_window_from_front_to_back([&](WSWindow& window) {
-        auto window_frame_rect = window.frame().rect();
-        if (!window_frame_rect.contains(event.position()))
-            return IterationDecision::Continue;
+    if (m_active_input_window) {
+        // At this point, we have delivered the start of an input sequence to a
+        // client application. We must keep delivering to that client
+        // application until the input sequence is done.
+        //
+        // This prevents e.g. dragging on one window out of the bounds starting
+        // a drag in that other unrelated window, and other silly shennanigans.
+        if (!windows_who_received_mouse_event_due_to_cursor_tracking.contains(m_active_input_window)) {
+            auto translated_event = event.translated(-m_active_input_window->position());
+            deliver_mouse_event(*m_active_input_window, translated_event);
+            windows_who_received_mouse_event_due_to_cursor_tracking.set(m_active_input_window.ptr());
+        }
+        if (event.type() == WSEvent::MouseUp && event.buttons() == 0) {
+            m_active_input_window = nullptr;
+        }
+    } else {
+        for_each_visible_window_from_front_to_back([&](WSWindow& window) {
+            auto window_frame_rect = window.frame().rect();
+            if (!window_frame_rect.contains(event.position()))
+                return IterationDecision::Continue;
 
-        if (&window != m_resize_candidate.ptr())
-            clear_resize_candidate();
+            if (&window != m_resize_candidate.ptr())
+                clear_resize_candidate();
 
-        // First check if we should initiate a drag or resize (Logo+LMB or Logo+RMB).
-        // In those cases, the event is swallowed by the window manager.
-        if (window.type() == WSWindowType::Normal) {
-            if (!window.is_fullscreen() && m_keyboard_modifiers == Mod_Logo && event.type() == WSEvent::MouseDown && event.button() == MouseButton::Left) {
-                hovered_window = &window;
-                start_window_drag(window, event);
-                return IterationDecision::Break;
+            // First check if we should initiate a drag or resize (Logo+LMB or Logo+RMB).
+            // In those cases, the event is swallowed by the window manager.
+            if (window.is_movable()) {
+                if (!window.is_fullscreen() && m_keyboard_modifiers == Mod_Logo && event.type() == WSEvent::MouseDown && event.button() == MouseButton::Left) {
+                    hovered_window = &window;
+                    start_window_drag(window, event);
+                    return IterationDecision::Break;
+                }
+                if (window.is_resizable() && m_keyboard_modifiers == Mod_Logo && event.type() == WSEvent::MouseDown && event.button() == MouseButton::Right && !window.is_blocked_by_modal_window()) {
+                    hovered_window = &window;
+                    start_window_resize(window, event);
+                    return IterationDecision::Break;
+                }
             }
-            if (window.is_resizable() && m_keyboard_modifiers == Mod_Logo && event.type() == WSEvent::MouseDown && event.button() == MouseButton::Right && !window.is_blocked_by_modal_window()) {
-                hovered_window = &window;
-                start_window_resize(window, event);
-                return IterationDecision::Break;
-            }
+
             if (m_keyboard_modifiers == Mod_Logo && event.type() == WSEvent::MouseWheel) {
                 float opacity_change = -event.wheel_delta() * 0.05f;
                 float new_opacity = window.opacity() + opacity_change;
@@ -735,25 +755,29 @@ void WSWindowManager::process_mouse_event(WSMouseEvent& event, WSWindow*& hovere
                 window.invalidate();
                 return IterationDecision::Break;
             }
-        }
-        // Well okay, let's see if we're hitting the frame or the window inside the frame.
-        if (window.rect().contains(event.position())) {
-            if (window.type() == WSWindowType::Normal && event.type() == WSEvent::MouseDown)
-                move_to_front_and_make_active(window);
 
-            hovered_window = &window;
-            if (!window.global_cursor_tracking() && !windows_who_received_mouse_event_due_to_cursor_tracking.contains(&window)) {
-                auto translated_event = event.translated(-window.position());
-                deliver_mouse_event(window, translated_event);
+            // Well okay, let's see if we're hitting the frame or the window inside the frame.
+            if (window.rect().contains(event.position())) {
+                if (window.type() == WSWindowType::Normal && event.type() == WSEvent::MouseDown)
+                    move_to_front_and_make_active(window);
+
+                hovered_window = &window;
+                if (!window.global_cursor_tracking() && !windows_who_received_mouse_event_due_to_cursor_tracking.contains(&window)) {
+                    auto translated_event = event.translated(-window.position());
+                    deliver_mouse_event(window, translated_event);
+                    if (event.type() == WSEvent::MouseDown) {
+                        m_active_input_window = window.make_weak_ptr();
+                    }
+                }
+                return IterationDecision::Break;
             }
-            return IterationDecision::Break;
-        }
 
-        // We are hitting the frame, pass the event along to WSWindowFrame.
-        window.frame().on_mouse_event(event.translated(-window_frame_rect.location()));
-        event_window_with_frame = &window;
-        return IterationDecision::Break;
-    });
+            // We are hitting the frame, pass the event along to WSWindowFrame.
+            window.frame().on_mouse_event(event.translated(-window_frame_rect.location()));
+            event_window_with_frame = &window;
+            return IterationDecision::Break;
+        });
+    }
 
     if (event_window_with_frame != m_resize_candidate.ptr())
         clear_resize_candidate();
@@ -882,12 +906,12 @@ void WSWindowManager::set_active_window(WSWindow* window)
 
     auto* previously_active_window = m_active_window.ptr();
     if (previously_active_window) {
-        WSEventLoop::the().post_event(*previously_active_window, make<WSEvent>(WSEvent::WindowDeactivated));
+        CEventLoop::current().post_event(*previously_active_window, make<WSEvent>(WSEvent::WindowDeactivated));
         invalidate(*previously_active_window);
     }
     m_active_window = window->make_weak_ptr();
     if (m_active_window) {
-        WSEventLoop::the().post_event(*m_active_window, make<WSEvent>(WSEvent::WindowActivated));
+        CEventLoop::current().post_event(*m_active_window, make<WSEvent>(WSEvent::WindowActivated));
         invalidate(*m_active_window);
 
         auto* client = window->client();
@@ -905,12 +929,12 @@ void WSWindowManager::set_hovered_window(WSWindow* window)
         return;
 
     if (m_hovered_window)
-        WSEventLoop::the().post_event(*m_hovered_window, make<WSEvent>(WSEvent::WindowLeft));
+        CEventLoop::current().post_event(*m_hovered_window, make<WSEvent>(WSEvent::WindowLeft));
 
     m_hovered_window = window ? window->make_weak_ptr() : nullptr;
 
     if (m_hovered_window)
-        WSEventLoop::the().post_event(*m_hovered_window, make<WSEvent>(WSEvent::WindowEntered));
+        CEventLoop::current().post_event(*m_hovered_window, make<WSEvent>(WSEvent::WindowEntered));
 }
 
 void WSWindowManager::invalidate()
@@ -965,7 +989,7 @@ void WSWindowManager::notify_client_changed_app_menubar(WSClientConnection& clie
 {
     if (active_client() == &client)
         set_current_menubar(client.app_menubar());
-    m_menubar_keeper.refresh();
+    m_menu_manager.refresh();
 }
 
 const WSCursor& WSWindowManager::active_cursor() const

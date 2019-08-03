@@ -5,11 +5,16 @@
 #include <AK/Time.h>
 #include <AK/Types.h>
 #include <Kernel/Arch/i386/CPU.h>
+#include <Kernel/Arch/i386/PIT.h>
 #include <Kernel/Devices/NullDevice.h>
 #include <Kernel/FileSystem/Custody.h>
+#include <Kernel/FileSystem/Ext2FileSystem.h>
 #include <Kernel/FileSystem/FIFO.h>
 #include <Kernel/FileSystem/FileDescription.h>
+#include <Kernel/FileSystem/InodeWatcher.h>
+#include <Kernel/FileSystem/SharedMemory.h>
 #include <Kernel/FileSystem/VirtualFileSystem.h>
+#include <Kernel/IO.h>
 #include <Kernel/KSyms.h>
 #include <Kernel/Multiboot.h>
 #include <Kernel/Net/Socket.h>
@@ -17,12 +22,10 @@
 #include <Kernel/ProcessTracer.h>
 #include <Kernel/RTC.h>
 #include <Kernel/Scheduler.h>
-#include <Kernel/SharedMemory.h>
+#include <Kernel/SharedBuffer.h>
 #include <Kernel/StdLib.h>
 #include <Kernel/Syscall.h>
 #include <Kernel/TTY/MasterPTY.h>
-#include <Kernel/VM/MemoryManager.h>
-#include <Kernel/i8253.h>
 #include <Kernel/kmalloc.h>
 #include <LibC/errno_numbers.h>
 #include <LibC/signal_numbers.h>
@@ -31,13 +34,17 @@
 //#define DEBUG_IO
 //#define TASK_DEBUG
 //#define FORK_DEBUG
-#define SIGNAL_DEBUG
+//#define SIGNAL_DEBUG
 //#define SHARED_BUFFER_DEBUG
+
+static void create_signal_trampolines();
 
 static pid_t next_pid;
 InlineLinkedList<Process>* g_processes;
 static String* s_hostname;
 static Lock* s_hostname_lock;
+VirtualAddress g_return_to_ring3_from_signal_trampoline;
+VirtualAddress g_return_to_ring0_from_signal_trampoline;
 
 void Process::initialize()
 {
@@ -45,6 +52,8 @@ void Process::initialize()
     g_processes = new InlineLinkedList<Process>;
     s_hostname = new String("courage");
     s_hostname_lock = new Lock;
+
+    create_signal_trampolines();
 }
 
 Vector<pid_t> Process::all_pids()
@@ -98,30 +107,30 @@ Region* Process::allocate_region(VirtualAddress vaddr, size_t size, const String
     auto range = allocate_range(vaddr, size);
     if (!range.is_valid())
         return nullptr;
-    m_regions.append(adopt(*new Region(range, move(name), prot_to_region_access_flags(prot))));
+    m_regions.append(Region::create_user_accessible(range, name, prot_to_region_access_flags(prot)));
     MM.map_region(*this, m_regions.last());
     if (commit)
         m_regions.last().commit();
     return &m_regions.last();
 }
 
-Region* Process::allocate_file_backed_region(VirtualAddress vaddr, size_t size, RefPtr<Inode>&& inode, const String& name, int prot)
+Region* Process::allocate_file_backed_region(VirtualAddress vaddr, size_t size, NonnullRefPtr<Inode> inode, const String& name, int prot)
 {
     auto range = allocate_range(vaddr, size);
     if (!range.is_valid())
         return nullptr;
-    m_regions.append(adopt(*new Region(range, move(inode), name, prot_to_region_access_flags(prot))));
+    m_regions.append(Region::create_user_accessible(range, inode, name, prot_to_region_access_flags(prot)));
     MM.map_region(*this, m_regions.last());
     return &m_regions.last();
 }
 
-Region* Process::allocate_region_with_vmo(VirtualAddress vaddr, size_t size, NonnullRefPtr<VMObject>&& vmo, size_t offset_in_vmo, const String& name, int prot)
+Region* Process::allocate_region_with_vmo(VirtualAddress vaddr, size_t size, NonnullRefPtr<VMObject> vmo, size_t offset_in_vmo, const String& name, int prot)
 {
     auto range = allocate_range(vaddr, size);
     if (!range.is_valid())
         return nullptr;
     offset_in_vmo &= PAGE_MASK;
-    m_regions.append(adopt(*new Region(range, move(vmo), offset_in_vmo, name, prot_to_region_access_flags(prot))));
+    m_regions.append(Region::create_user_accessible(range, move(vmo), offset_in_vmo, name, prot_to_region_access_flags(prot)));
     MM.map_region(*this, m_regions.last());
     return &m_regions.last();
 }
@@ -229,9 +238,7 @@ int Process::sys$gethostname(char* buffer, ssize_t size)
 
 Process* Process::fork(RegisterDump& regs)
 {
-    auto* child = new Process(String(m_name), m_uid, m_gid, m_pid, m_ring, m_cwd.copy_ref(), m_executable.copy_ref(), m_tty, this);
-    if (!child)
-        return nullptr;
+    auto* child = new Process(String(m_name), m_uid, m_gid, m_pid, m_ring, m_cwd, m_executable, m_tty, this);
 
 #ifdef FORK_DEBUG
     dbgprintf("fork: child=%p\n", child);
@@ -334,7 +341,7 @@ int Process::do_exec(String path, Vector<String> arguments, Vector<String> envir
 
     auto vmo = VMObject::create_file_backed(description->inode());
     vmo->set_name(description->absolute_path());
-    RefPtr<Region> region = allocate_region_with_vmo(VirtualAddress(), metadata.size, vmo.copy_ref(), 0, vmo->name(), PROT_READ);
+    RefPtr<Region> region = allocate_region_with_vmo(VirtualAddress(), metadata.size, vmo, 0, vmo->name(), PROT_READ);
     ASSERT(region);
 
     if (this != &current->process()) {
@@ -342,6 +349,11 @@ int Process::do_exec(String path, Vector<String> arguments, Vector<String> envir
         bool success = region->page_in();
         ASSERT(success);
     }
+
+#ifdef EXPENSIVE_USERSPACE_STACKS
+    region->page_in();
+#endif
+
     OwnPtr<ELFLoader> loader;
     {
         // Okay, here comes the sleight of hand, pay close attention..
@@ -358,7 +370,7 @@ int Process::do_exec(String path, Vector<String> arguments, Vector<String> envir
                 prot |= PROT_WRITE;
             if (is_executable)
                 prot |= PROT_EXEC;
-            (void)allocate_region_with_vmo(vaddr, size, vmo.copy_ref(), offset_in_image, String(name), prot);
+            (void)allocate_region_with_vmo(vaddr, size, vmo, offset_in_image, String(name), prot);
             return vaddr.as_ptr();
         };
         loader->alloc_section_hook = [&](VirtualAddress vaddr, size_t size, size_t alignment, bool is_readable, bool is_writable, const String& name) {
@@ -442,6 +454,7 @@ int Process::do_exec(String path, Vector<String> arguments, Vector<String> envir
 #endif
 
     main_thread().set_state(Thread::State::Skip1SchedulerPass);
+    big_lock().unlock_if_locked();
     return 0;
 }
 
@@ -520,7 +533,7 @@ Process* Process::create_user_process(const String& path, uid_t uid, gid_t gid, 
     {
         InterruptDisabler disabler;
         if (auto* parent = Process::from_pid(parent_pid))
-            cwd = parent->m_cwd.copy_ref();
+            cwd = parent->m_cwd;
     }
 
     if (!cwd)
@@ -562,7 +575,7 @@ Process* Process::create_kernel_process(String&& name, void (*e)())
     return process;
 }
 
-Process::Process(String&& name, uid_t uid, gid_t gid, pid_t ppid, RingLevel ring, RefPtr<Custody>&& cwd, RefPtr<Custody>&& executable, TTY* tty, Process* fork_parent)
+Process::Process(String&& name, uid_t uid, gid_t gid, pid_t ppid, RingLevel ring, RefPtr<Custody> cwd, RefPtr<Custody> executable, TTY* tty, Process* fork_parent)
     : m_name(move(name))
     , m_pid(next_pid++) // FIXME: RACE: This variable looks racy!
     , m_uid(uid)
@@ -671,15 +684,15 @@ void Process::sys$exit(int status)
     ASSERT_NOT_REACHED();
 }
 
-void Process::create_signal_trampolines_if_needed()
+void create_signal_trampolines()
 {
-    if (!m_return_to_ring3_from_signal_trampoline.is_null())
-        return;
-    // FIXME: This should be a global trampoline shared by all processes, not one created per process!
-    // FIXME: Remap as read-only after setup.
-    auto* region = allocate_region(VirtualAddress(), PAGE_SIZE, "Signal trampolines", PROT_READ | PROT_WRITE | PROT_EXEC);
-    m_return_to_ring3_from_signal_trampoline = region->vaddr();
-    u8* code_ptr = m_return_to_ring3_from_signal_trampoline.as_ptr();
+    InterruptDisabler disabler;
+
+    // NOTE: We leak this region.
+    auto* trampoline_region = MM.allocate_user_accessible_kernel_region(PAGE_SIZE, "Signal trampolines").leak_ref();
+    g_return_to_ring3_from_signal_trampoline = trampoline_region->vaddr();
+
+    u8* code_ptr = (u8*)trampoline_region->vaddr().as_ptr();
     *code_ptr++ = 0x58; // pop eax (Argument to signal handler (ignored here))
     *code_ptr++ = 0x5a; // pop edx (Original signal mask to restore)
     *code_ptr++ = 0xb8; // mov eax, <u32>
@@ -698,7 +711,7 @@ void Process::create_signal_trampolines_if_needed()
     *code_ptr++ = 0x0f; // ud2
     *code_ptr++ = 0x0b;
 
-    m_return_to_ring0_from_signal_trampoline = VirtualAddress((u32)code_ptr);
+    g_return_to_ring0_from_signal_trampoline = VirtualAddress((u32)code_ptr);
     *code_ptr++ = 0x58; // pop eax (Argument to signal handler (ignored here))
     *code_ptr++ = 0x5a; // pop edx (Original signal mask to restore)
     *code_ptr++ = 0xb8; // mov eax, <u32>
@@ -715,6 +728,9 @@ void Process::create_signal_trampolines_if_needed()
     *code_ptr++ = 0x82;
     *code_ptr++ = 0x0f; // ud2
     *code_ptr++ = 0x0b;
+
+    trampoline_region->set_writable(false);
+    MM.remap_region(*trampoline_region->page_directory(), *trampoline_region);
 }
 
 int Process::sys$restore_signal_mask(u32 mask)
@@ -867,9 +883,10 @@ ssize_t Process::sys$writev(int fd, const struct iovec* iov, int iov_count)
     }
 
     if (current->has_unmasked_pending_signals()) {
-        current->block(Thread::State::BlockedSignal);
-        if (nwritten == 0)
-            return -EINTR;
+        if (current->block<Thread::SemiPermanentBlocker>(Thread::SemiPermanentBlocker::Reason::Signal) == Thread::BlockResult::InterruptedBySignal) {
+            if (nwritten == 0)
+                return -EINTR;
+        }
     }
 
     return nwritten;
@@ -898,7 +915,10 @@ ssize_t Process::do_write(FileDescription& description, const u8* data, int data
 #ifdef IO_DEBUG
             dbgprintf("block write on %d\n", fd);
 #endif
-            current->block(Thread::State::BlockedWrite, description);
+            if (current->block<Thread::WriteBlocker>(description) == Thread::BlockResult::InterruptedBySignal) {
+                if (nwritten == 0)
+                    return -EINTR;
+            }
         }
         ssize_t rc = description.write(data + nwritten, data_size - nwritten);
 #ifdef IO_DEBUG
@@ -912,9 +932,10 @@ ssize_t Process::do_write(FileDescription& description, const u8* data, int data
         if (rc == 0)
             break;
         if (current->has_unmasked_pending_signals()) {
-            current->block(Thread::State::BlockedSignal);
-            if (nwritten == 0)
-                return -EINTR;
+            if (current->block<Thread::SemiPermanentBlocker>(Thread::SemiPermanentBlocker::Reason::Signal) == Thread::BlockResult::InterruptedBySignal) {
+                if (nwritten == 0)
+                    return -EINTR;
+            }
         }
         nwritten += rc;
     }
@@ -937,9 +958,10 @@ ssize_t Process::sys$write(int fd, const u8* data, ssize_t size)
         return -EBADF;
     auto nwritten = do_write(*description, data, size);
     if (current->has_unmasked_pending_signals()) {
-        current->block(Thread::State::BlockedSignal);
-        if (nwritten == 0)
-            return -EINTR;
+        if (current->block<Thread::SemiPermanentBlocker>(Thread::SemiPermanentBlocker::Reason::Signal) == Thread::BlockResult::InterruptedBySignal) {
+            if (nwritten == 0)
+                return -EINTR;
+        }
     }
     return nwritten;
 }
@@ -960,8 +982,7 @@ ssize_t Process::sys$read(int fd, u8* buffer, ssize_t size)
         return -EBADF;
     if (description->is_blocking()) {
         if (!description->can_read()) {
-            current->block(Thread::State::BlockedRead, *description);
-            if (current->m_was_interrupted_while_blocked)
+            if (current->block<Thread::ReadBlocker>(*description) == Thread::BlockResult::InterruptedBySignal)
                 return -EINTR;
         }
     }
@@ -1056,14 +1077,20 @@ int Process::sys$lstat(const char* path, stat* statbuf)
 {
     if (!validate_write_typed(statbuf))
         return -EFAULT;
-    return VFS::the().stat(StringView(path), O_NOFOLLOW_NOERROR, current_directory(), *statbuf);
+    auto metadata_or_error = VFS::the().lookup_metadata(StringView(path), current_directory(), O_NOFOLLOW_NOERROR);
+    if (metadata_or_error.is_error())
+        return metadata_or_error.error();
+    return metadata_or_error.value().stat(*statbuf);
 }
 
 int Process::sys$stat(const char* path, stat* statbuf)
 {
     if (!validate_write_typed(statbuf))
         return -EFAULT;
-    return VFS::the().stat(StringView(path), 0, current_directory(), *statbuf);
+    auto metadata_or_error = VFS::the().lookup_metadata(StringView(path), current_directory());
+    if (metadata_or_error.is_error())
+        return metadata_or_error.error();
+    return metadata_or_error.value().stat(*statbuf);
 }
 
 int Process::sys$readlink(const char* path, char* buffer, ssize_t size)
@@ -1127,12 +1154,18 @@ int Process::number_of_open_file_descriptors() const
     return count;
 }
 
-int Process::sys$open(const char* path, int options, mode_t mode)
+int Process::sys$open(const Syscall::SC_open_params* params)
 {
+    if (!validate_read_typed(params))
+        return -EFAULT;
+    auto* path = params->path;
+    auto path_length = params->path_length;
+    auto options = params->options;
+    auto mode = params->mode;
 #ifdef DEBUG_IO
     dbgprintf("%s(%u) sys$open(\"%s\")\n", name().characters(), pid(), path);
 #endif
-    if (!validate_read_str(path))
+    if (!validate_read(path, path_length))
         return -EFAULT;
     int fd = alloc_fd();
     if (fd < 0)
@@ -1256,8 +1289,9 @@ int Process::sys$kill(pid_t pid, int signal)
         ASSERT(pid != -1);
     }
     if (pid == m_pid) {
+        // FIXME: If we ignore this signal anyway, we don't need to block here, right?
         current->send_signal(signal, this);
-        current->block(Thread::State::BlockedSignal);
+        (void)current->block<Thread::SemiPermanentBlocker>(Thread::SemiPermanentBlocker::Reason::Signal);
         return 0;
     }
     InterruptDisabler disabler;
@@ -1281,10 +1315,9 @@ int Process::sys$usleep(useconds_t usec)
     if (!usec)
         return 0;
 
-    current->sleep(usec / 1000);
-    if (current->m_wakeup_time > g_uptime) {
-        ASSERT(current->m_was_interrupted_while_blocked);
-        u32 ticks_left_until_original_wakeup_time = current->m_wakeup_time - g_uptime;
+    u64 wakeup_time = current->sleep(usec / 1000);
+    if (wakeup_time > g_uptime) {
+        u32 ticks_left_until_original_wakeup_time = wakeup_time - g_uptime;
         return ticks_left_until_original_wakeup_time / TICKS_PER_SECOND;
     }
     return 0;
@@ -1294,10 +1327,9 @@ int Process::sys$sleep(unsigned seconds)
 {
     if (!seconds)
         return 0;
-    current->sleep(seconds * TICKS_PER_SECOND);
-    if (current->m_wakeup_time > g_uptime) {
-        ASSERT(current->m_was_interrupted_while_blocked);
-        u32 ticks_left_until_original_wakeup_time = current->m_wakeup_time - g_uptime;
+    u64 wakeup_time = current->sleep(seconds * TICKS_PER_SECOND);
+    if (wakeup_time > g_uptime) {
+        u32 ticks_left_until_original_wakeup_time = wakeup_time - g_uptime;
         return ticks_left_until_original_wakeup_time / TICKS_PER_SECOND;
     }
     return 0;
@@ -1376,7 +1408,7 @@ int Process::reap(Process& process)
             }
         }
 
-        dbgprintf("reap: %s(%u) {%s}\n", process.name().characters(), process.pid(), to_string(process.state()));
+        dbgprintf("reap: %s(%u) {%s}\n", process.name().characters(), process.pid(), process.main_thread().state_string());
         ASSERT(process.is_dead());
         g_processes->remove(&process);
     }
@@ -1387,8 +1419,12 @@ int Process::reap(Process& process)
 pid_t Process::sys$waitpid(pid_t waitee, int* wstatus, int options)
 {
     dbgprintf("sys$waitpid(%d, %p, %d)\n", waitee, wstatus, options);
-    // FIXME: Respect options
-    (void)options;
+
+    if (!options) {
+        // FIXME: This can't be right.. can it? Figure out how this should actually work.
+        options = WEXITED;
+    }
+
     if (wstatus)
         if (!validate_write_typed(wstatus))
             return -EFAULT;
@@ -1403,6 +1439,7 @@ pid_t Process::sys$waitpid(pid_t waitee, int* wstatus, int options)
     }
 
     if (options & WNOHANG) {
+        // FIXME: Figure out what WNOHANG should do with stopped children.
         if (waitee == -1) {
             pid_t reaped_pid = 0;
             InterruptDisabler disabler;
@@ -1411,7 +1448,7 @@ pid_t Process::sys$waitpid(pid_t waitee, int* wstatus, int options)
                     reaped_pid = process.pid();
                     exit_status = reap(process);
                 }
-                return true;
+                return IterationDecision::Continue;
             });
             return reaped_pid;
         } else {
@@ -1428,19 +1465,22 @@ pid_t Process::sys$waitpid(pid_t waitee, int* wstatus, int options)
         }
     }
 
-    current->m_waitee_pid = waitee;
-    current->block(Thread::State::BlockedWait);
-    if (current->m_was_interrupted_while_blocked)
+    pid_t waitee_pid = waitee;
+    if (current->block<Thread::WaitBlocker>(options, waitee_pid) == Thread::BlockResult::InterruptedBySignal)
         return -EINTR;
-    Process* waitee_process;
-    {
-        InterruptDisabler disabler;
-        // NOTE: If waitee was -1, m_waitee will have been filled in by the scheduler.
-        waitee_process = Process::from_pid(current->m_waitee_pid);
-    }
+
+    InterruptDisabler disabler;
+
+    // NOTE: If waitee was -1, m_waitee_pid will have been filled in by the scheduler.
+    Process* waitee_process = Process::from_pid(waitee_pid);
     ASSERT(waitee_process);
-    exit_status = reap(*waitee_process);
-    return current->m_waitee_pid;
+    if (waitee_process->is_dead()) {
+        exit_status = reap(*waitee_process);
+    } else {
+        ASSERT(waitee_process->main_thread().state() == Thread::State::Stopped);
+        exit_status = 0x7f;
+    }
+    return waitee_pid;
 }
 
 enum class KernelMemoryCheckResult {
@@ -1774,12 +1814,16 @@ int Process::sys$select(const Syscall::SC_select_params* params)
     if (params->nfds < 0)
         return -EINVAL;
 
+    timeval timeout;
+    bool select_has_timeout = false;
     if (params->timeout && (params->timeout->tv_sec || params->timeout->tv_usec)) {
-        timeval_add(kgettimeofday(), *params->timeout, current->m_select_timeout);
-        current->m_select_has_timeout = true;
-    } else {
-        current->m_select_has_timeout = false;
+        timeval_add(kgettimeofday(), *params->timeout, timeout);
+        select_has_timeout = true;
     }
+
+    Thread::SelectBlocker::FDVector rfds;
+    Thread::SelectBlocker::FDVector wfds;
+    Thread::SelectBlocker::FDVector efds;
 
     auto transfer_fds = [&](auto* fds, auto& vector) -> int {
         vector.clear_with_capacity();
@@ -1794,19 +1838,21 @@ int Process::sys$select(const Syscall::SC_select_params* params)
         }
         return 0;
     };
-    if (int error = transfer_fds(params->writefds, current->m_select_write_fds))
+    if (int error = transfer_fds(params->writefds, wfds))
         return error;
-    if (int error = transfer_fds(params->readfds, current->m_select_read_fds))
+    if (int error = transfer_fds(params->readfds, rfds))
         return error;
-    if (int error = transfer_fds(params->exceptfds, current->m_select_exceptional_fds))
+    if (int error = transfer_fds(params->exceptfds, efds))
         return error;
 
 #if defined(DEBUG_IO) || defined(DEBUG_POLL_SELECT)
-    dbgprintf("%s<%u> selecting on (read:%u, write:%u), timeout=%p\n", name().characters(), pid(), current->m_select_read_fds.size(), current->m_select_write_fds.size(), params->timeout);
+    dbgprintf("%s<%u> selecting on (read:%u, write:%u), timeout=%p\n", name().characters(), pid(), rfds.size(), wfds.size(), params->timeout);
 #endif
 
-    if (!params->timeout || current->m_select_has_timeout)
-        current->block(Thread::State::BlockedSelect);
+    if (!params->timeout || select_has_timeout) {
+        if (current->block<Thread::SelectBlocker>(timeout, select_has_timeout, rfds, wfds, efds) == Thread::BlockResult::InterruptedBySignal)
+            return -EINTR;
+    }
 
     int marked_fd_count = 0;
     auto mark_fds = [&](auto* fds, auto& vector, auto should_mark) {
@@ -1820,9 +1866,10 @@ int Process::sys$select(const Syscall::SC_select_params* params)
             }
         }
     };
-    mark_fds(params->readfds, current->m_select_read_fds, [](auto& description) { return description.can_read(); });
-    mark_fds(params->writefds, current->m_select_write_fds, [](auto& description) { return description.can_write(); });
+    mark_fds(params->readfds, rfds, [](auto& description) { return description.can_read(); });
+    mark_fds(params->writefds, wfds, [](auto& description) { return description.can_write(); });
     // FIXME: We should also mark params->exceptfds as appropriate.
+
     return marked_fd_count;
 }
 
@@ -1831,15 +1878,18 @@ int Process::sys$poll(pollfd* fds, int nfds, int timeout)
     if (!validate_read_typed(fds))
         return -EFAULT;
 
-    current->m_select_write_fds.clear_with_capacity();
-    current->m_select_read_fds.clear_with_capacity();
+    Thread::SelectBlocker::FDVector rfds;
+    Thread::SelectBlocker::FDVector wfds;
+
     for (int i = 0; i < nfds; ++i) {
         if (fds[i].events & POLLIN)
-            current->m_select_read_fds.append(fds[i].fd);
+            rfds.append(fds[i].fd);
         if (fds[i].events & POLLOUT)
-            current->m_select_write_fds.append(fds[i].fd);
+            wfds.append(fds[i].fd);
     }
 
+    timeval actual_timeout;
+    bool has_timeout = false;
     if (timeout >= 0) {
         // poll is in ms, we want s/us.
         struct timeval tvtimeout;
@@ -1849,18 +1899,17 @@ int Process::sys$poll(pollfd* fds, int nfds, int timeout)
             timeout -= 1000;
         }
         tvtimeout.tv_usec = timeout * 1000;
-        timeval_add(kgettimeofday(), tvtimeout, current->m_select_timeout);
-        current->m_select_has_timeout = true;
-    } else {
-        current->m_select_has_timeout = false;
+        timeval_add(kgettimeofday(), tvtimeout, actual_timeout);
+        has_timeout = true;
     }
 
 #if defined(DEBUG_IO) || defined(DEBUG_POLL_SELECT)
-    dbgprintf("%s<%u> polling on (read:%u, write:%u), timeout=%d\n", name().characters(), pid(), current->m_select_read_fds.size(), current->m_select_write_fds.size(), timeout);
+    dbgprintf("%s<%u> polling on (read:%u, write:%u), timeout=%d\n", name().characters(), pid(), rfds.size(), wfds.size(), timeout);
 #endif
 
-    if (current->m_select_has_timeout || timeout < 0) {
-        current->block(Thread::State::BlockedSelect);
+    if (has_timeout || timeout < 0) {
+        if (current->block<Thread::SelectBlocker>(actual_timeout, has_timeout, rfds, wfds, Thread::SelectBlocker::FDVector()) == Thread::BlockResult::InterruptedBySignal)
+            return -EINTR;
     }
 
     int fds_with_revents = 0;
@@ -2103,8 +2152,12 @@ int Process::sys$accept(int accepting_socket_fd, sockaddr* address, socklen_t* a
         return -ENOTSOCK;
     auto& socket = *accepting_socket_description->socket();
     if (!socket.can_accept()) {
-        ASSERT(!accepting_socket_description->is_blocking());
-        return -EAGAIN;
+        if (accepting_socket_description->is_blocking()) {
+            if (current->block<Thread::AcceptBlocker>(*accepting_socket_description) == Thread::BlockResult::InterruptedBySignal)
+                return -EINTR;
+        } else {
+            return -EAGAIN;
+        }
     }
     auto accepted_socket = socket.accept();
     ASSERT(accepted_socket);
@@ -2350,126 +2403,6 @@ int Process::sys$setsockopt(const Syscall::SC_setsockopt_params* params)
     return socket.setsockopt(level, option, value, value_size);
 }
 
-struct SharedBuffer {
-    SharedBuffer(pid_t pid1, pid_t pid2, int size)
-        : m_pid1(pid1)
-        , m_pid2(pid2)
-        , m_vmo(VMObject::create_anonymous(size))
-    {
-        ASSERT(pid1 != pid2);
-    }
-
-    void* retain(Process& process)
-    {
-        if (m_pid1 == process.pid()) {
-            ++m_pid1_retain_count;
-            if (!m_pid1_region) {
-                m_pid1_region = process.allocate_region_with_vmo(VirtualAddress(), size(), m_vmo.copy_ref(), 0, "SharedBuffer", PROT_READ | (m_pid1_writable ? PROT_WRITE : 0));
-                m_pid1_region->set_shared(true);
-            }
-            return m_pid1_region->vaddr().as_ptr();
-        } else if (m_pid2 == process.pid()) {
-            ++m_pid2_retain_count;
-            if (!m_pid2_region) {
-                m_pid2_region = process.allocate_region_with_vmo(VirtualAddress(), size(), m_vmo.copy_ref(), 0, "SharedBuffer", PROT_READ | (m_pid2_writable ? PROT_WRITE : 0));
-                m_pid2_region->set_shared(true);
-            }
-            return m_pid2_region->vaddr().as_ptr();
-        }
-        return nullptr;
-    }
-
-    void release(Process& process)
-    {
-        if (m_pid1 == process.pid()) {
-            ASSERT(m_pid1_retain_count);
-            --m_pid1_retain_count;
-            if (!m_pid1_retain_count) {
-                if (m_pid1_region)
-                    process.deallocate_region(*m_pid1_region);
-                m_pid1_region = nullptr;
-            }
-            destroy_if_unused();
-        } else if (m_pid2 == process.pid()) {
-            ASSERT(m_pid2_retain_count);
-            --m_pid2_retain_count;
-            if (!m_pid2_retain_count) {
-                if (m_pid2_region)
-                    process.deallocate_region(*m_pid2_region);
-                m_pid2_region = nullptr;
-            }
-            destroy_if_unused();
-        }
-    }
-
-    void disown(pid_t pid)
-    {
-        if (m_pid1 == pid) {
-            m_pid1 = 0;
-            m_pid1_retain_count = 0;
-            destroy_if_unused();
-        } else if (m_pid2 == pid) {
-            m_pid2 = 0;
-            m_pid2_retain_count = 0;
-            destroy_if_unused();
-        }
-    }
-
-    pid_t pid1() const { return m_pid1; }
-    pid_t pid2() const { return m_pid2; }
-    unsigned pid1_ref_count() const { return m_pid1_retain_count; }
-    unsigned pid2_ref_count() const { return m_pid2_retain_count; }
-    size_t size() const { return m_vmo->size(); }
-    void destroy_if_unused();
-
-    void seal()
-    {
-        m_pid1_writable = false;
-        m_pid2_writable = false;
-        if (m_pid1_region) {
-            m_pid1_region->set_writable(false);
-            MM.remap_region(*m_pid1_region->page_directory(), *m_pid1_region);
-        }
-        if (m_pid2_region) {
-            m_pid2_region->set_writable(false);
-            MM.remap_region(*m_pid2_region->page_directory(), *m_pid2_region);
-        }
-    }
-
-    int m_shared_buffer_id { -1 };
-    pid_t m_pid1;
-    pid_t m_pid2;
-    unsigned m_pid1_retain_count { 1 };
-    unsigned m_pid2_retain_count { 0 };
-    Region* m_pid1_region { nullptr };
-    Region* m_pid2_region { nullptr };
-    bool m_pid1_writable { false };
-    bool m_pid2_writable { false };
-    NonnullRefPtr<VMObject> m_vmo;
-};
-
-static int s_next_shared_buffer_id;
-Lockable<HashMap<int, OwnPtr<SharedBuffer>>>& shared_buffers()
-{
-    static Lockable<HashMap<int, OwnPtr<SharedBuffer>>>* map;
-    if (!map)
-        map = new Lockable<HashMap<int, OwnPtr<SharedBuffer>>>;
-    return *map;
-}
-
-void SharedBuffer::destroy_if_unused()
-{
-    if (!m_pid1_retain_count && !m_pid2_retain_count) {
-        LOCKER(shared_buffers().lock());
-#ifdef SHARED_BUFFER_DEBUG
-        kprintf("Destroying unused SharedBuffer{%p} id: %d (pid1: %d, pid2: %d)\n", this, m_shared_buffer_id, m_pid1, m_pid2);
-#endif
-        auto count_before = shared_buffers().resource().size();
-        shared_buffers().resource().remove(m_shared_buffer_id);
-        ASSERT(count_before != shared_buffers().resource().size());
-    }
-}
-
 void Process::disown_all_shared_buffers()
 {
     LOCKER(shared_buffers().lock());
@@ -2480,34 +2413,61 @@ void Process::disown_all_shared_buffers()
         shared_buffer->disown(m_pid);
 }
 
-int Process::sys$create_shared_buffer(pid_t peer_pid, int size, void** buffer)
+int Process::sys$create_shared_buffer(int size, void** buffer)
 {
     if (!size || size < 0)
         return -EINVAL;
     size = PAGE_ROUND_UP(size);
-    if (!peer_pid || peer_pid < 0 || peer_pid == m_pid)
-        return -EINVAL;
     if (!validate_write_typed(buffer))
         return -EFAULT;
+
+    LOCKER(shared_buffers().lock());
+    static int s_next_shared_buffer_id;
+    int shared_buffer_id = ++s_next_shared_buffer_id;
+    auto shared_buffer = make<SharedBuffer>(shared_buffer_id, size);
+    shared_buffer->share_with(m_pid);
+    *buffer = shared_buffer->ref_for_process_and_get_address(*this);
+    ASSERT((int)shared_buffer->size() >= size);
+#ifdef SHARED_BUFFER_DEBUG
+    kprintf("%s(%u): Created shared buffer %d @ %p (%u bytes, vmo is %u)\n", name().characters(), pid(), shared_buffer_id, *buffer, size, shared_buffer->size());
+#endif
+    shared_buffers().resource().set(shared_buffer_id, move(shared_buffer));
+
+    return shared_buffer_id;
+}
+
+int Process::sys$share_buffer_with(int shared_buffer_id, pid_t peer_pid)
+{
+    if (!peer_pid || peer_pid < 0 || peer_pid == m_pid)
+        return -EINVAL;
+    LOCKER(shared_buffers().lock());
+    auto it = shared_buffers().resource().find(shared_buffer_id);
+    if (it == shared_buffers().resource().end())
+        return -EINVAL;
+    auto& shared_buffer = *(*it).value;
+    if (!shared_buffer.is_shared_with(m_pid))
+        return -EPERM;
     {
         InterruptDisabler disabler;
         auto* peer = Process::from_pid(peer_pid);
         if (!peer)
             return -ESRCH;
     }
+    shared_buffer.share_with(peer_pid);
+    return 0;
+}
+
+int Process::sys$share_buffer_globally(int shared_buffer_id)
+{
     LOCKER(shared_buffers().lock());
-    int shared_buffer_id = ++s_next_shared_buffer_id;
-    auto shared_buffer = make<SharedBuffer>(m_pid, peer_pid, size);
-    shared_buffer->m_shared_buffer_id = shared_buffer_id;
-    ASSERT((int)shared_buffer->size() >= size);
-    shared_buffer->m_pid1_region = allocate_region_with_vmo(VirtualAddress(), shared_buffer->size(), shared_buffer->m_vmo.copy_ref(), 0, "SharedBuffer", PROT_READ | PROT_WRITE);
-    shared_buffer->m_pid1_region->set_shared(true);
-    *buffer = shared_buffer->m_pid1_region->vaddr().as_ptr();
-#ifdef SHARED_BUFFER_DEBUG
-    kprintf("%s(%u): Created shared buffer %d (%u bytes, vmo is %u) for sharing with %d\n", name().characters(), pid(), shared_buffer_id, size, shared_buffer->size(), peer_pid);
-#endif
-    shared_buffers().resource().set(shared_buffer_id, move(shared_buffer));
-    return shared_buffer_id;
+    auto it = shared_buffers().resource().find(shared_buffer_id);
+    if (it == shared_buffers().resource().end())
+        return -EINVAL;
+    auto& shared_buffer = *(*it).value;
+    if (!shared_buffer.is_shared_with(m_pid))
+        return -EPERM;
+    shared_buffer.share_globally();
+    return 0;
 }
 
 int Process::sys$release_shared_buffer(int shared_buffer_id)
@@ -2517,10 +2477,12 @@ int Process::sys$release_shared_buffer(int shared_buffer_id)
     if (it == shared_buffers().resource().end())
         return -EINVAL;
     auto& shared_buffer = *(*it).value;
+    if (!shared_buffer.is_shared_with(m_pid))
+        return -EPERM;
 #ifdef SHARED_BUFFER_DEBUG
     kprintf("%s(%u): Releasing shared buffer %d, buffer count: %u\n", name().characters(), pid(), shared_buffer_id, shared_buffers().resource().size());
 #endif
-    shared_buffer.release(*this);
+    shared_buffer.deref_for_process(*this);
     return 0;
 }
 
@@ -2531,12 +2493,12 @@ void* Process::sys$get_shared_buffer(int shared_buffer_id)
     if (it == shared_buffers().resource().end())
         return (void*)-EINVAL;
     auto& shared_buffer = *(*it).value;
-    if (shared_buffer.pid1() != m_pid && shared_buffer.pid2() != m_pid)
-        return (void*)-EINVAL;
+    if (!shared_buffer.is_shared_with(m_pid))
+        return (void*)-EPERM;
 #ifdef SHARED_BUFFER_DEBUG
     kprintf("%s(%u): Retaining shared buffer %d, buffer count: %u\n", name().characters(), pid(), shared_buffer_id, shared_buffers().resource().size());
 #endif
-    return shared_buffer.retain(*this);
+    return shared_buffer.ref_for_process_and_get_address(*this);
 }
 
 int Process::sys$seal_shared_buffer(int shared_buffer_id)
@@ -2546,8 +2508,8 @@ int Process::sys$seal_shared_buffer(int shared_buffer_id)
     if (it == shared_buffers().resource().end())
         return -EINVAL;
     auto& shared_buffer = *(*it).value;
-    if (shared_buffer.pid1() != m_pid && shared_buffer.pid2() != m_pid)
-        return -EINVAL;
+    if (!shared_buffer.is_shared_with(m_pid))
+        return -EPERM;
 #ifdef SHARED_BUFFER_DEBUG
     kprintf("%s(%u): Sealing shared buffer %d\n", name().characters(), pid(), shared_buffer_id);
 #endif
@@ -2562,8 +2524,8 @@ int Process::sys$get_shared_buffer_size(int shared_buffer_id)
     if (it == shared_buffers().resource().end())
         return -EINVAL;
     auto& shared_buffer = *(*it).value;
-    if (shared_buffer.pid1() != m_pid && shared_buffer.pid2() != m_pid)
-        return -EINVAL;
+    if (!shared_buffer.is_shared_with(m_pid))
+        return -EPERM;
 #ifdef SHARED_BUFFER_DEBUG
     kprintf("%s(%u): Get shared buffer %d size: %u\n", name().characters(), pid(), shared_buffer_id, shared_buffers().resource().size());
 #endif
@@ -2625,7 +2587,7 @@ int Process::sys$create_thread(int (*entry)(void*), void* argument)
     thread->make_userspace_stack_for_secondary_thread(argument);
 
     thread->set_state(Thread::State::Runnable);
-    return 0;
+    return thread->tid();
 }
 
 void Process::sys$exit_thread(int code)
@@ -2705,6 +2667,26 @@ int Process::sys$ftruncate(int fd, off_t length)
     return description->truncate(length);
 }
 
+int Process::sys$watch_file(const char* path, int path_length)
+{
+    if (!validate_read(path, path_length))
+        return -EFAULT;
+
+    auto custody_or_error = VFS::the().resolve_path({ path, path_length }, current_directory());
+    if (custody_or_error.is_error())
+        return custody_or_error.error();
+
+    auto& custody = custody_or_error.value();
+    auto& inode = custody->inode();
+
+    int fd = alloc_fd();
+    if (fd < 0)
+        return fd;
+
+    m_fds[fd].set(FileDescription::create(*InodeWatcher::create(inode)));
+    return fd;
+}
+
 int Process::sys$systrace(pid_t pid)
 {
     InterruptDisabler disabler;
@@ -2719,6 +2701,87 @@ int Process::sys$systrace(pid_t pid)
     auto description = FileDescription::create(peer->ensure_tracer());
     m_fds[fd].set(move(description), 0);
     return fd;
+}
+
+int Process::sys$halt()
+{
+    if (!is_superuser())
+        return -EPERM;
+
+    dbgprintf("acquiring FS locks...\n");
+    FS::lock_all();
+    dbgprintf("syncing mounted filesystems...\n");
+    FS::sync();
+    dbgprintf("attempting system shutdown...\n");
+    IO::out16(0x604, 0x2000);
+
+    return ESUCCESS;
+}
+
+int Process::sys$reboot()
+{
+    if (!is_superuser())
+        return -EPERM;
+
+    dbgprintf("acquiring FS locks...\n");
+    FS::lock_all();
+    dbgprintf("syncing mounted filesystems...\n");
+    FS::sync();
+    dbgprintf("attempting reboot via KB Controller...\n");
+    IO::out8(0x64, 0xFE);
+
+    return ESUCCESS;
+}
+
+int Process::sys$mount(const char* device_path, const char* mountpoint)
+{
+    if (!is_superuser())
+        return -EPERM;
+
+    if (!validate_read_str(device_path) || !validate_read_str(mountpoint))
+        return -EFAULT;
+
+    dbg() << "mount: device " << device_path << " @ " << mountpoint;
+
+    auto custody_or_error = VFS::the().resolve_path(mountpoint, current_directory());
+    if (custody_or_error.is_error())
+        return custody_or_error.error();
+
+    auto& mountpoint_custody = custody_or_error.value();
+
+    auto metadata_or_error = VFS::the().lookup_metadata(device_path, current_directory());
+    if (metadata_or_error.is_error())
+        return metadata_or_error.error();
+
+    auto major = metadata_or_error.value().major_device;
+    auto minor = metadata_or_error.value().minor_device;
+
+    auto* device = VFS::the().get_device(major, minor);
+    if (!device) {
+        dbg() << "mount: device (" << major << "," << minor << ") not found";
+        return -ENODEV;
+    }
+
+    if (!device->is_disk_device()) {
+        dbg() << "mount: device (" << major << "," << minor << ") is not a DiskDevice";
+        return -ENODEV;
+    }
+
+    auto& disk_device = static_cast<DiskDevice&>(*device);
+
+    dbg() << "mount: attempting to mount device (" << major << "," << minor << ") on " << mountpoint;
+
+    // We currently only support ext2. Sorry :^)
+    auto ext2fs = Ext2FS::create(disk_device);
+    if (!ext2fs->initialize()) {
+        dbg() << "mount: could not find ext2 filesystem on " << device_path;
+        return -ENODEV;
+    }
+
+    // Let's mount the volume now
+    auto result = VFS::the().mount(ext2fs, mountpoint_custody);
+    dbg() << "mount: successfully mounted " << device_path << " on " << mountpoint;
+    return result;
 }
 
 ProcessTracer& Process::ensure_tracer()
@@ -2746,4 +2809,49 @@ int Process::sys$mknod(const char* pathname, mode_t mode, dev_t dev)
         return -EFAULT;
 
     return VFS::the().mknod(StringView(pathname), mode, dev, current_directory());
+}
+
+int Process::sys$dump_backtrace()
+{
+    dump_backtrace();
+    return 0;
+}
+
+int Process::sys$dbgputch(u8 ch)
+{
+    IO::out8(0xe9, ch);
+    return 0;
+}
+
+int Process::sys$dbgputstr(const u8* characters, int length)
+{
+    if (!validate_read(characters, length))
+        return -EFAULT;
+    for (int i = 0; i < length; ++i)
+        IO::out8(0xe9, characters[i]);
+    return 0;
+}
+
+String Process::backtrace(ProcessInspectionHandle& handle) const
+{
+    StringBuilder builder;
+    for_each_thread([&](Thread& thread) {
+        builder.appendf("Thread %d:\n", thread.tid());
+        builder.append(thread.backtrace(handle));
+        return IterationDecision::Continue;
+    });
+    return builder.to_string();
+}
+
+int Process::sys$set_process_icon(int icon_id)
+{
+    LOCKER(shared_buffers().lock());
+    auto it = shared_buffers().resource().find(icon_id);
+    if (it == shared_buffers().resource().end())
+        return -EINVAL;
+    auto& shared_buffer = *(*it).value;
+    if (!shared_buffer.is_shared_with(m_pid))
+        return -EPERM;
+    m_icon_id = icon_id;
+    return 0;
 }

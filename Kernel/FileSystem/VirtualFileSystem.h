@@ -4,9 +4,9 @@
 #include <AK/Badge.h>
 #include <AK/Function.h>
 #include <AK/HashMap.h>
+#include <AK/NonnullOwnPtrVector.h>
 #include <AK/OwnPtr.h>
 #include <AK/RefPtr.h>
-#include <AK/Vector.h>
 #include <Kernel/FileSystem/FileSystem.h>
 #include <Kernel/FileSystem/InodeIdentifier.h>
 #include <Kernel/FileSystem/InodeMetadata.h>
@@ -51,13 +51,14 @@ public:
         RefPtr<Custody> m_host_custody;
     };
 
-    [[gnu::pure]] static VFS& the();
+    static VFS& the();
 
     VFS();
     ~VFS();
 
     bool mount_root(NonnullRefPtr<FS>&&);
-    bool mount(NonnullRefPtr<FS>&&, StringView path);
+    KResult mount(NonnullRefPtr<FS>&&, StringView path);
+    KResult mount(NonnullRefPtr<FS>&&, Custody& mount_point);
 
     KResultOr<NonnullRefPtr<FileDescription>> open(RefPtr<Device>&&, int options);
     KResultOr<NonnullRefPtr<FileDescription>> open(StringView path, int options, mode_t mode, Custody& base);
@@ -72,7 +73,7 @@ public:
     KResult chown(StringView path, uid_t, gid_t, Custody& base);
     KResult chown(Inode&, uid_t, gid_t);
     KResult access(StringView path, int mode, Custody& base);
-    KResult stat(StringView path, int options, Custody& base, struct stat&);
+    KResultOr<InodeMetadata> lookup_metadata(StringView path, Custody& base, int options = 0);
     KResult utime(StringView path, Custody& base, time_t atime, time_t mtime);
     KResult rename(StringView oldpath, StringView newpath, Custody& base);
     KResult mknod(StringView path, mode_t, dev_t, Custody& base);
@@ -106,7 +107,7 @@ private:
     Mount* find_mount_for_guest(InodeIdentifier);
 
     RefPtr<Inode> m_root_inode;
-    Vector<OwnPtr<Mount>> m_mounts;
+    NonnullOwnPtrVector<Mount> m_mounts;
     HashMap<u32, Device*> m_devices;
 
     RefPtr<Custody> m_root_custody;

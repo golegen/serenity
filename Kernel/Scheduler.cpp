@@ -1,14 +1,73 @@
 #include <AK/TemporaryChange.h>
-#include <Kernel/Alarm.h>
+#include <Kernel/Arch/i386/PIT.h>
 #include <Kernel/Devices/PCSpeaker.h>
 #include <Kernel/FileSystem/FileDescription.h>
 #include <Kernel/Process.h>
 #include <Kernel/RTC.h>
 #include <Kernel/Scheduler.h>
-#include <Kernel/i8253.h>
+
+struct SchedulerData {
+    typedef IntrusiveList<Thread, &Thread::m_runnable_list_node> ThreadList;
+
+    ThreadList m_runnable_threads;
+    ThreadList m_nonrunnable_threads;
+
+    ThreadList& thread_list_for_state(Thread::State state)
+    {
+        if (Thread::is_runnable_state(state))
+            return m_runnable_threads;
+        return m_nonrunnable_threads;
+    }
+};
+
+static SchedulerData* g_scheduler_data;
+
+void Scheduler::init_thread(Thread& thread)
+{
+    g_scheduler_data->m_nonrunnable_threads.append(thread);
+}
+
+void Scheduler::update_state_for_thread(Thread& thread)
+{
+    auto& list = g_scheduler_data->thread_list_for_state(thread.state());
+
+    if (list.contains(thread))
+        return;
+
+    list.append(thread);
+}
+
+IterationDecision Scheduler::for_each_runnable_func(Function<IterationDecision(Thread&)>&& callback)
+{
+    ASSERT_INTERRUPTS_DISABLED();
+    auto& tl = g_scheduler_data->m_runnable_threads;
+    for (auto it = tl.begin(); it != tl.end();) {
+        auto thread = *it;
+        it = ++it;
+        if (callback(*thread) == IterationDecision::Break)
+            return IterationDecision::Break;
+    }
+
+    return IterationDecision::Continue;
+}
+
+IterationDecision Scheduler::for_each_nonrunnable_func(Function<IterationDecision(Thread&)>&& callback)
+{
+    ASSERT_INTERRUPTS_DISABLED();
+    auto& tl = g_scheduler_data->m_nonrunnable_threads;
+    for (auto it = tl.begin(); it != tl.end();) {
+        auto thread = *it;
+        it = ++it;
+        if (callback(*thread) == IterationDecision::Break)
+            return IterationDecision::Break;
+    }
+
+    return IterationDecision::Continue;
+}
 
 //#define LOG_EVERY_CONTEXT_SWITCH
 //#define SCHEDULER_DEBUG
+//#define SCHEDULER_RUNNABLE_DEBUG
 
 static u32 time_slice_for(Process::Priority priority)
 {
@@ -51,6 +110,194 @@ void Scheduler::beep()
     s_beep_timeout = g_uptime + 100;
 }
 
+Thread::FileDescriptionBlocker::FileDescriptionBlocker(const FileDescription& description)
+    : m_blocked_description(description)
+{}
+
+const FileDescription& Thread::FileDescriptionBlocker::blocked_description() const
+{
+    return m_blocked_description;
+}
+
+Thread::AcceptBlocker::AcceptBlocker(const FileDescription& description)
+    : FileDescriptionBlocker(description)
+{
+}
+
+bool Thread::AcceptBlocker::should_unblock(Thread&, time_t, long)
+{
+    auto& socket = *blocked_description().socket();
+    return socket.can_accept();
+}
+
+Thread::ReceiveBlocker::ReceiveBlocker(const FileDescription& description)
+    : FileDescriptionBlocker(description)
+{
+}
+
+bool Thread::ReceiveBlocker::should_unblock(Thread&, time_t now_sec, long now_usec)
+{
+    auto& socket = *blocked_description().socket();
+    // FIXME: Block until the amount of data wanted is available.
+    bool timed_out = now_sec > socket.receive_deadline().tv_sec || (now_sec == socket.receive_deadline().tv_sec && now_usec >= socket.receive_deadline().tv_usec);
+    if (timed_out || blocked_description().can_read())
+        return true;
+    return false;
+}
+
+Thread::ConnectBlocker::ConnectBlocker(const FileDescription& description)
+    : FileDescriptionBlocker(description)
+{
+}
+
+bool Thread::ConnectBlocker::should_unblock(Thread&, time_t, long)
+{
+    auto& socket = *blocked_description().socket();
+    return socket.is_connected();
+}
+
+Thread::WriteBlocker::WriteBlocker(const FileDescription& description)
+    : FileDescriptionBlocker(description)
+{
+}
+
+bool Thread::WriteBlocker::should_unblock(Thread&, time_t, long)
+{
+    return blocked_description().can_write();
+}
+
+Thread::ReadBlocker::ReadBlocker(const FileDescription& description)
+    : FileDescriptionBlocker(description)
+{
+}
+
+bool Thread::ReadBlocker::should_unblock(Thread&, time_t, long)
+{
+    // FIXME: Block until the amount of data wanted is available.
+    return blocked_description().can_read();
+}
+
+Thread::ConditionBlocker::ConditionBlocker(const char* state_string, Function<bool()>&& condition)
+    : m_block_until_condition(move(condition))
+    , m_state_string(state_string)
+{
+    ASSERT(m_block_until_condition);
+}
+
+bool Thread::ConditionBlocker::should_unblock(Thread&, time_t, long)
+{
+    return m_block_until_condition();
+}
+
+Thread::SleepBlocker::SleepBlocker(u64 wakeup_time)
+    : m_wakeup_time(wakeup_time)
+{
+}
+
+bool Thread::SleepBlocker::should_unblock(Thread&, time_t, long)
+{
+    return m_wakeup_time <= g_uptime;
+}
+
+Thread::SelectBlocker::SelectBlocker(const timeval& tv, bool select_has_timeout, const FDVector& read_fds, const FDVector& write_fds, const FDVector& except_fds)
+    : m_select_timeout(tv)
+    , m_select_has_timeout(select_has_timeout)
+    , m_select_read_fds(read_fds)
+    , m_select_write_fds(write_fds)
+    , m_select_exceptional_fds(except_fds)
+{
+}
+
+bool Thread::SelectBlocker::should_unblock(Thread& thread, time_t now_sec, long now_usec)
+{
+    if (m_select_has_timeout) {
+        if (now_sec > m_select_timeout.tv_sec || (now_sec == m_select_timeout.tv_sec && now_usec >= m_select_timeout.tv_usec))
+            return true;
+    }
+
+    auto& process = thread.process();
+    for (int fd : m_select_read_fds) {
+        if (process.m_fds[fd].description->can_read())
+            return true;
+    }
+    for (int fd : m_select_write_fds) {
+        if (process.m_fds[fd].description->can_write())
+            return true;
+    }
+
+    return false;
+}
+
+Thread::WaitBlocker::WaitBlocker(int wait_options, pid_t& waitee_pid)
+    : m_wait_options(wait_options)
+    , m_waitee_pid(waitee_pid)
+{
+}
+
+bool Thread::WaitBlocker::should_unblock(Thread& thread, time_t, long)
+{
+    bool should_unblock = false;
+    thread.process().for_each_child([&](Process& child) {
+        if (m_waitee_pid != -1 && m_waitee_pid != child.pid())
+            return IterationDecision::Continue;
+
+        bool child_exited = child.is_dead();
+        bool child_stopped = child.main_thread().state() == Thread::State::Stopped;
+
+        bool wait_finished = ((m_wait_options & WEXITED) && child_exited)
+            || ((m_wait_options & WSTOPPED) && child_stopped);
+
+        if (!wait_finished)
+            return IterationDecision::Continue;
+
+        m_waitee_pid = child.pid();
+        should_unblock = true;
+        return IterationDecision::Break;
+    });
+    return should_unblock;
+}
+
+Thread::SemiPermanentBlocker::SemiPermanentBlocker(Reason reason)
+    : m_reason(reason)
+{}
+
+bool Thread::SemiPermanentBlocker::should_unblock(Thread&, time_t, long)
+{
+    // someone else has to unblock us
+    return false;
+}
+
+// Called by the scheduler on threads that are blocked for some reason.
+// Make a decision as to whether to unblock them or not.
+void Thread::consider_unblock(time_t now_sec, long now_usec)
+{
+    switch (state()) {
+    case Thread::Invalid:
+    case Thread::Runnable:
+    case Thread::Running:
+    case Thread::Dead:
+    case Thread::Stopped:
+        /* don't know, don't care */
+        return;
+    case Thread::Blocked:
+        ASSERT(!m_blockers.is_empty());
+        if (m_blockers.first()->should_unblock(*this, now_sec, now_usec))
+            unblock();
+        return;
+    case Thread::Skip1SchedulerPass:
+        set_state(Thread::Skip0SchedulerPasses);
+        return;
+    case Thread::Skip0SchedulerPasses:
+        set_state(Thread::Runnable);
+        return;
+    case Thread::Dying:
+        ASSERT(g_finalizer);
+        if (g_finalizer->is_blocked())
+            g_finalizer->unblock();
+        return;
+    }
+}
+
 bool Scheduler::pick_next()
 {
     ASSERT_INTERRUPTS_DISABLED();
@@ -68,115 +315,13 @@ bool Scheduler::pick_next()
 
     struct timeval now;
     kgettimeofday(now);
+
     auto now_sec = now.tv_sec;
     auto now_usec = now.tv_usec;
 
     // Check and unblock threads whose wait conditions have been met.
-    Thread::for_each_nonrunnable([&](Thread& thread) {
-        auto& process = thread.process();
-
-        if (thread.state() == Thread::BlockedSleep) {
-            if (thread.wakeup_time() <= g_uptime)
-                thread.unblock();
-            return IterationDecision::Continue;
-        }
-
-        if (thread.state() == Thread::BlockedWait) {
-            process.for_each_child([&](Process& child) {
-                if (!child.is_dead())
-                    return true;
-                if (thread.waitee_pid() == -1 || thread.waitee_pid() == child.pid()) {
-                    thread.m_waitee_pid = child.pid();
-                    thread.unblock();
-                    return false;
-                }
-                return true;
-            });
-            return IterationDecision::Continue;
-        }
-
-        if (thread.state() == Thread::BlockedRead) {
-            ASSERT(thread.m_blocked_description);
-            // FIXME: Block until the amount of data wanted is available.
-            if (thread.m_blocked_description->can_read())
-                thread.unblock();
-            return IterationDecision::Continue;
-        }
-
-        if (thread.state() == Thread::BlockedWrite) {
-            ASSERT(thread.m_blocked_description != -1);
-            if (thread.m_blocked_description->can_write())
-                thread.unblock();
-            return IterationDecision::Continue;
-        }
-
-        if (thread.state() == Thread::BlockedConnect) {
-            auto& description = *thread.m_blocked_description;
-            auto& socket = *description.socket();
-            if (socket.is_connected())
-                thread.unblock();
-            return IterationDecision::Continue;
-        }
-
-        if (thread.state() == Thread::BlockedReceive) {
-            auto& description = *thread.m_blocked_description;
-            auto& socket = *description.socket();
-            // FIXME: Block until the amount of data wanted is available.
-            bool timed_out = now_sec > socket.receive_deadline().tv_sec || (now_sec == socket.receive_deadline().tv_sec && now_usec >= socket.receive_deadline().tv_usec);
-            if (timed_out || description.can_read()) {
-                thread.unblock();
-                return IterationDecision::Continue;
-            }
-            return IterationDecision::Continue;
-        }
-
-        if (thread.state() == Thread::BlockedSelect) {
-            if (thread.m_select_has_timeout) {
-                if (now_sec > thread.m_select_timeout.tv_sec || (now_sec == thread.m_select_timeout.tv_sec && now_usec >= thread.m_select_timeout.tv_usec)) {
-                    thread.unblock();
-                    return IterationDecision::Continue;
-                }
-            }
-            for (int fd : thread.m_select_read_fds) {
-                if (process.m_fds[fd].description->can_read()) {
-                    thread.unblock();
-                    return IterationDecision::Continue;
-                }
-            }
-            for (int fd : thread.m_select_write_fds) {
-                if (process.m_fds[fd].description->can_write()) {
-                    thread.unblock();
-                    return IterationDecision::Continue;
-                }
-            }
-            return IterationDecision::Continue;
-        }
-
-        if (thread.state() == Thread::BlockedSnoozing) {
-            if (thread.m_snoozing_alarm->is_ringing()) {
-                thread.m_snoozing_alarm = nullptr;
-                thread.unblock();
-            }
-            return IterationDecision::Continue;
-        }
-
-        if (thread.state() == Thread::Skip1SchedulerPass) {
-            thread.set_state(Thread::Skip0SchedulerPasses);
-            return IterationDecision::Continue;
-        }
-
-        if (thread.state() == Thread::Skip0SchedulerPasses) {
-            thread.set_state(Thread::Runnable);
-            return IterationDecision::Continue;
-        }
-
-        if (thread.state() == Thread::Dying) {
-            ASSERT(g_finalizer);
-            if (g_finalizer->state() == Thread::BlockedLurking)
-                g_finalizer->unblock();
-            return IterationDecision::Continue;
-        }
-
+    Scheduler::for_each_nonrunnable([&](Thread& thread) {
+        thread.consider_unblock(now_sec, now_usec);
         return IterationDecision::Continue;
     });
 
@@ -199,14 +344,14 @@ bool Scheduler::pick_next()
 
     // Dispatch any pending signals.
     // FIXME: Do we really need this to be a separate pass over the process list?
-    Thread::for_each_living([](Thread& thread) {
+    Thread::for_each_living([](Thread& thread) -> IterationDecision {
         if (!thread.has_unmasked_pending_signals())
-            return true;
+            return IterationDecision::Continue;
         // FIXME: It would be nice if the Scheduler didn't have to worry about who is "current"
         //        For now, avoid dispatching signals to "current" and do it in a scheduling pass
         //        while some other process is interrupted. Otherwise a mess will be made.
         if (&thread == current)
-            return true;
+            return IterationDecision::Continue;
         // We know how to interrupt blocked processes, but if they are just executing
         // at some random point in the kernel, let them continue. They'll be in userspace
         // sooner or later and we can deliver the signal then.
@@ -214,45 +359,49 @@ bool Scheduler::pick_next()
         //        signal and dispatch it then and there? Would that be doable without the
         //        syscall effectively being "interrupted" despite having completed?
         if (thread.in_kernel() && !thread.is_blocked() && !thread.is_stopped())
-            return true;
+            return IterationDecision::Continue;
         // NOTE: dispatch_one_pending_signal() may unblock the process.
         bool was_blocked = thread.is_blocked();
         if (thread.dispatch_one_pending_signal() == ShouldUnblockThread::No)
-            return true;
+            return IterationDecision::Continue;
         if (was_blocked) {
             dbgprintf("Unblock %s(%u) due to signal\n", thread.process().name().characters(), thread.pid());
-            thread.m_was_interrupted_while_blocked = true;
+            ASSERT(!thread.m_blockers.is_empty());
+            thread.m_blockers.first()->set_interrupted_by_signal();
             thread.unblock();
         }
-        return true;
+        return IterationDecision::Continue;
     });
 
-#ifdef SCHEDULER_DEBUG
+#ifdef SCHEDULER_RUNNABLE_DEBUG
     dbgprintf("Non-runnables:\n");
-    for (auto* thread = g_nonrunnable_threads->head(); thread; thread = thread->next()) {
-        auto* process = &thread->process();
-        dbgprintf("[K%x] %-12s %s(%u:%u) @ %w:%x\n", process, to_string(thread->state()), process->name().characters(), process->pid(), thread->tid(), thread->tss().cs, thread->tss().eip);
-    }
+    Scheduler::for_each_nonrunnable([](Thread& thread) -> IterationDecision {
+        auto& process = thread.process();
+        dbgprintf("[K%x] %-12s %s(%u:%u) @ %w:%x\n", &process, thread.state_string(), process.name().characters(), process.pid(), thread.tid(), thread.tss().cs, thread.tss().eip);
+        return IterationDecision::Continue;
+    });
 
     dbgprintf("Runnables:\n");
-    for (auto* thread = g_runnable_threads->head(); thread; thread = thread->next()) {
-        auto* process = &thread->process();
-        dbgprintf("[K%x] %-12s %s(%u:%u) @ %w:%x\n", process, to_string(thread->state()), process->name().characters(), process->pid(), thread->tid(), thread->tss().cs, thread->tss().eip);
-    }
+    Scheduler::for_each_runnable([](Thread& thread) -> IterationDecision {
+        auto& process = thread.process();
+        dbgprintf("[K%x] %-12s %s(%u:%u) @ %w:%x\n", &process, thread.state_string(), process.name().characters(), process.pid(), thread.tid(), thread.tss().cs, thread.tss().eip);
+        return IterationDecision::Continue;
+    });
 #endif
 
-    if (g_runnable_threads->is_empty())
+    auto& runnable_list = g_scheduler_data->m_runnable_threads;
+    if (runnable_list.is_empty())
         return context_switch(s_colonel_process->main_thread());
 
-    auto* previous_head = g_runnable_threads->head();
+    auto* previous_head = runnable_list.first();
     for (;;) {
         // Move head to tail.
-        g_runnable_threads->append(g_runnable_threads->remove_head());
-        auto* thread = g_runnable_threads->head();
+        runnable_list.append(*runnable_list.first());
+        auto* thread = runnable_list.first();
 
         if (!thread->process().is_being_inspected() && (thread->state() == Thread::Runnable || thread->state() == Thread::Running)) {
 #ifdef SCHEDULER_DEBUG
-            kprintf("switch to %s(%u:%u) @ %w:%x\n", thread->process().name().characters(), thread->process().pid(), thread->tid(), thread->tss().cs, thread->tss().eip);
+            dbgprintf("switch to %s(%u:%u) @ %w:%x\n", thread->process().name().characters(), thread->process().pid(), thread->tid(), thread->tss().cs, thread->tss().eip);
 #endif
             return context_switch(*thread);
         }
@@ -398,6 +547,7 @@ Process* Scheduler::colonel()
 
 void Scheduler::initialize()
 {
+    g_scheduler_data = new SchedulerData;
     s_redirection.selector = gdt_alloc_entry();
     initialize_redirection();
     s_colonel_process = Process::create_kernel_process("colonel", nullptr);

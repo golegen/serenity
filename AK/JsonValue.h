@@ -1,6 +1,8 @@
 #pragma once
 
 #include <AK/AKString.h>
+#include <AK/IPv4Address.h>
+#include <AK/Optional.h>
 
 namespace AK {
 
@@ -44,6 +46,7 @@ public:
     JsonValue(bool);
     JsonValue(const char*);
     JsonValue(const String&);
+    JsonValue(const IPv4Address&);
     JsonValue(const JsonArray&);
     JsonValue(const JsonObject&);
 
@@ -55,6 +58,46 @@ public:
         if (is_string())
             return as_string();
         return default_value;
+    }
+
+    Optional<IPv4Address> to_ipv4_address() const
+    {
+        if (!is_string())
+            return {};
+        return IPv4Address::from_string(as_string());
+    }
+
+    int to_int(int default_value = 0) const
+    {
+        if (!is_number())
+            return default_value;
+#ifndef KERNEL
+        if (is_double())
+            return (int)as_double();
+#endif
+        if (is_uint())
+            return (int)as_uint();
+        return as_int();
+    }
+
+    unsigned to_uint(unsigned default_value = 0) const
+    {
+        if (!is_number())
+            return default_value;
+#ifndef KERNEL
+        if (is_double())
+            return (unsigned)as_double();
+#endif
+        if (is_int())
+            return (unsigned)as_int();
+        return as_uint();
+    }
+
+    bool to_bool(bool default_value = false) const
+    {
+        if (!is_bool())
+            return default_value;
+        return as_bool();
     }
 
     int as_int() const
@@ -92,6 +135,14 @@ public:
         ASSERT(is_array());
         return *m_value.as_array;
     }
+
+#ifndef KERNEL
+    double as_double() const
+    {
+        ASSERT(is_double());
+        return m_value.as_double;
+    }
+#endif
 
     Type type() const { return m_type; }
 

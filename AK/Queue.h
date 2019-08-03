@@ -23,6 +23,11 @@ public:
         ++m_size;
     }
 
+    void enqueue(const T& value)
+    {
+        enqueue(T(value));
+    }
+
     T dequeue()
     {
         ASSERT(!is_empty());
@@ -33,6 +38,13 @@ public:
         }
         --m_size;
         return value;
+    }
+
+    void clear()
+    {
+        m_segments.clear();
+        m_index_into_first = 0;
+        m_size = 0;
     }
 
 private:

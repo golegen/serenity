@@ -41,11 +41,11 @@ public:
         if (view.m_impl)
             m_impl = *view.m_impl;
         else
-            m_impl = StringImpl::create(view.characters(), view.length());
+            m_impl = StringImpl::create(view.characters_without_null_termination(), view.length());
     }
 
     String(const String& other)
-        : m_impl(const_cast<String&>(other).m_impl.copy_ref())
+        : m_impl(const_cast<String&>(other).m_impl)
     {
     }
 
@@ -131,10 +131,16 @@ public:
 
     bool operator==(const String&) const;
     bool operator!=(const String& other) const { return !(*this == other); }
+
     bool operator<(const String&) const;
     bool operator<(const char*) const;
     bool operator>=(const String& other) const { return !(*this < other); }
     bool operator>=(const char* other) const { return !(*this < other); }
+
+    bool operator>(const String&) const;
+    bool operator>(const char*) const;
+    bool operator<=(const String& other) const { return !(*this > other); }
+    bool operator<=(const char* other) const { return !(*this > other); }
 
     bool operator==(const char* cstring) const
     {
@@ -167,7 +173,7 @@ public:
     String& operator=(const String& other)
     {
         if (this != &other)
-            m_impl = const_cast<String&>(other).m_impl.copy_ref();
+            m_impl = const_cast<String&>(other).m_impl;
         return *this;
     }
 
@@ -213,6 +219,12 @@ struct Traits<String> : public GenericTraits<String> {
     static void dump(const String& s) { kprintf("%s", s.characters()); }
 };
 
+struct CaseInsensitiveStringTraits : public AK::Traits<String> {
+    static unsigned hash(const String& s) { return s.impl() ? s.to_lowercase().impl()->hash() : 0; }
+    static bool equals(const String& a, const String& b) { return a.to_lowercase() == b.to_lowercase(); }
+
+};
+
 inline bool operator<(const char* characters, const String& string)
 {
     if (!characters)
@@ -229,6 +241,23 @@ inline bool operator>=(const char* characters, const String& string)
     return !(characters < string);
 }
 
+inline bool operator>(const char* characters, const String& string)
+{
+    if (!characters)
+        return !string.is_null();
+
+    if (string.is_null())
+        return false;
+
+    return strcmp(characters, string.characters()) > 0;
+}
+
+inline bool operator<=(const char* characters, const String& string)
+{
+    return !(characters > string);
+}
+
 }
 
 using AK::String;
+using AK::CaseInsensitiveStringTraits;

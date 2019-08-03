@@ -3,11 +3,10 @@
 #include <LibGUI/GAbstractButton.h>
 
 class GRadioButton : public GAbstractButton {
+    C_OBJECT(GRadioButton)
 public:
     GRadioButton(const StringView& text, GWidget* parent);
     virtual ~GRadioButton() override;
-
-    virtual const char* class_name() const override { return "GRadioButton"; }
 
     virtual void click() override;
 
@@ -15,6 +14,10 @@ protected:
     virtual void paint_event(GPaintEvent&) override;
 
 private:
+    // These don't make sense for a radio button, so hide them.
+    using GAbstractButton::auto_repeat_interval;
+    using GAbstractButton::set_auto_repeat_interval;
+
     virtual bool is_radio_button() const final { return true; }
 
     template<typename Callback>

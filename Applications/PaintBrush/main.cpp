@@ -9,7 +9,7 @@
 #include <LibGUI/GMenuBar.h>
 #include <LibGUI/GMessageBox.h>
 #include <LibGUI/GWindow.h>
-#include <SharedGraphics/PNGLoader.h>
+#include <LibDraw/PNGLoader.h>
 
 int main(int argc, char** argv)
 {
@@ -50,7 +50,7 @@ int main(int argc, char** argv)
             auto filename = picker.selected_file().string();
             auto bitmap = load_png(filename);
             if (!bitmap) {
-                GMessageBox msgbox(String::format("Failed to load '%s'", filename.characters()), "Open failed", GMessageBox::Type::Error, window);
+                GMessageBox msgbox(String::format("Failed to load '%s'", filename.characters()), "Open failed", GMessageBox::Type::Error, GMessageBox::InputType::OK, window);
                 msgbox.exec();
                 return;
             }

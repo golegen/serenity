@@ -1,5 +1,6 @@
 #pragma once
 
+#include <AK/AKString.h>
 #include <AK/Function.h>
 #include <AK/StdLibExtras.h>
 #include <AK/Vector.h>
@@ -7,16 +8,23 @@
 
 class CEvent;
 class CChildEvent;
+class CCustomEvent;
 class CTimerEvent;
 
+#define C_OBJECT(klass) \
+public:                 \
+    virtual const char* class_name() const override { return #klass; }
+
 class CObject : public Weakable<CObject> {
+    // NOTE: No C_OBJECT macro for CObject itself.
 public:
-    CObject(CObject* parent = nullptr, bool is_widget = false);
     virtual ~CObject();
 
-    virtual const char* class_name() const { return "CObject"; }
-
+    virtual const char* class_name() const = 0;
     virtual void event(CEvent&);
+
+    const String& name() const { return m_name; }
+    void set_name(const StringView& name) { m_name = name; }
 
     Vector<CObject*>& children() { return m_children; }
     const Vector<CObject*>& children() const { return m_children; }
@@ -53,11 +61,17 @@ public:
     virtual bool is_window() const { return false; }
 
 protected:
+    CObject(CObject* parent = nullptr, bool is_widget = false);
+
     virtual void timer_event(CTimerEvent&);
+    virtual void custom_event(CCustomEvent&);
+
+    // NOTE: You may get child events for children that are not yet fully constructed!
     virtual void child_event(CChildEvent&);
 
 private:
     CObject* m_parent { nullptr };
+    String m_name;
     int m_timer_id { 0 };
     bool m_widget { false };
     Vector<CObject*> m_children;
@@ -91,4 +105,9 @@ inline void CObject::for_each_child_of_type(Callback callback)
             return callback(to<T>(child));
         return IterationDecision::Continue;
     });
+}
+
+inline const LogStream& operator<<(const LogStream& stream, const CObject& object)
+{
+    return stream << object.class_name() << '{' << &object << '}';
 }

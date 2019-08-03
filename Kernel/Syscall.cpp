@@ -1,7 +1,7 @@
 #include <Kernel/Arch/i386/CPU.h>
 #include <Kernel/Console.h>
-#include <Kernel/Process.h>
 #include <Kernel/IO.h>
+#include <Kernel/Process.h>
 #include <Kernel/ProcessTracer.h>
 #include <Kernel/Scheduler.h>
 #include <Kernel/Syscall.h>
@@ -70,6 +70,10 @@ static u32 handle(RegisterDump& regs, u32 function, u32 arg1, u32 arg2, u32 arg3
     case Syscall::SC_putch:
         Console::the().put_char(arg1 & 0xff);
         break;
+    case Syscall::SC_dbgputch:
+        return current->process().sys$dbgputch((u8)arg1);
+    case Syscall::SC_dbgputstr:
+        return current->process().sys$dbgputstr((const u8*)arg1, (int)arg2);
     case Syscall::SC_sleep:
         return current->process().sys$sleep((unsigned)arg1);
     case Syscall::SC_usleep:
@@ -85,7 +89,7 @@ static u32 handle(RegisterDump& regs, u32 function, u32 arg1, u32 arg2, u32 arg3
     case Syscall::SC_getcwd:
         return current->process().sys$getcwd((char*)arg1, (size_t)arg2);
     case Syscall::SC_open:
-        return current->process().sys$open((const char*)arg1, (int)arg2, (mode_t)arg3);
+        return current->process().sys$open((const SC_open_params*)arg1);
     case Syscall::SC_write:
         return current->process().sys$write((int)arg1, (const u8*)arg2, (ssize_t)arg3);
     case Syscall::SC_close:
@@ -235,7 +239,9 @@ static u32 handle(RegisterDump& regs, u32 function, u32 arg1, u32 arg2, u32 arg3
     case Syscall::SC_connect:
         return current->process().sys$connect((int)arg1, (const sockaddr*)arg2, (socklen_t)arg3);
     case Syscall::SC_create_shared_buffer:
-        return current->process().sys$create_shared_buffer((pid_t)arg1, (size_t)arg2, (void**)arg3);
+        return current->process().sys$create_shared_buffer((size_t)arg1, (void**)arg2);
+    case Syscall::SC_share_buffer_with:
+        return current->process().sys$share_buffer_with((int)arg1, (pid_t)arg2);
     case Syscall::SC_get_shared_buffer:
         return (u32)current->process().sys$get_shared_buffer((int)arg1);
     case Syscall::SC_release_shared_buffer:
@@ -283,14 +289,22 @@ static u32 handle(RegisterDump& regs, u32 function, u32 arg1, u32 arg2, u32 arg3
     case Syscall::SC_sched_getparam:
         return current->process().sys$sched_setparam((pid_t)arg1, (struct sched_param*)arg2);
     case Syscall::SC_halt: {
-        dbgprintf("<%u> halting! acquiring locks...\n");
-        FS::lock_all();
-        dbgprintf("<%u> halting! syncing...\n");
-        FS::sync();
-        dbgprintf("<%u> halting! bye, friends...\n");
-        IO::out16(0x604, 0x2000);
+        return current->process().sys$halt();
         break;
     }
+    case Syscall::SC_mount:
+        return current->process().sys$mount((const char*)arg1, (const char*)arg2);
+    case Syscall::SC_reboot: {
+        return current->process().sys$reboot();
+    }
+    case Syscall::SC_dump_backtrace:
+        return current->process().sys$dump_backtrace();
+    case Syscall::SC_watch_file:
+        return current->process().sys$watch_file((const char*)arg1, (int)arg2);
+    case Syscall::SC_share_buffer_globally:
+        return current->process().sys$share_buffer_globally((int)arg1);
+    case Syscall::SC_set_process_icon:
+        return current->process().sys$set_process_icon((int)arg1);
     default:
         kprintf("<%u> int0x82: Unknown function %u requested {%x, %x, %x}\n", current->process().pid(), function, arg1, arg2, arg3);
         return -ENOSYS;

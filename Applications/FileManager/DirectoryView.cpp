@@ -10,14 +10,14 @@ void DirectoryView::handle_activation(const GModelIndex& index)
         return;
     dbgprintf("on activation: %d,%d, this=%p, m_model=%p\n", index.row(), index.column(), this, m_model.ptr());
     auto& entry = model().entry(index.row());
-    FileSystemPath path(String::format("%s/%s", model().path().characters(), entry.name.characters()));
+    auto path = canonicalized_path(String::format("%s/%s", model().path().characters(), entry.name.characters()));
     if (entry.is_directory()) {
-        open(path.string());
+        open(path);
         return;
     }
     if (entry.is_executable()) {
         if (fork() == 0) {
-            int rc = execl(path.string().characters(), path.string().characters(), nullptr);
+            int rc = execl(path.characters(), path.characters(), nullptr);
             if (rc < 0)
                 perror("exec");
             ASSERT_NOT_REACHED();
@@ -25,9 +25,9 @@ void DirectoryView::handle_activation(const GModelIndex& index)
         return;
     }
 
-    if (path.string().to_lowercase().ends_with(".png")) {
+    if (path.to_lowercase().ends_with(".png")) {
         if (fork() == 0) {
-            int rc = execl("/bin/qs", "/bin/qs", path.string().characters(), nullptr);
+            int rc = execl("/bin/qs", "/bin/qs", path.characters(), nullptr);
             if (rc < 0)
                 perror("exec");
             ASSERT_NOT_REACHED();
@@ -36,7 +36,7 @@ void DirectoryView::handle_activation(const GModelIndex& index)
     }
 
     if (fork() == 0) {
-        int rc = execl("/bin/TextEditor", "/bin/TextEditor", path.string().characters(), nullptr);
+        int rc = execl("/bin/TextEditor", "/bin/TextEditor", path.characters(), nullptr);
         if (rc < 0)
             perror("exec");
         ASSERT_NOT_REACHED();
@@ -52,7 +52,7 @@ DirectoryView::DirectoryView(GWidget* parent)
     m_item_view->set_model(model());
 
     m_table_view = new GTableView(this);
-    m_table_view->set_model(GSortingProxyModel::create(m_model.copy_ref()));
+    m_table_view->set_model(GSortingProxyModel::create(m_model));
 
     m_table_view->model()->set_key_column_and_sort_order(GDirectoryModel::Column::Name, GSortOrder::Ascending);
 

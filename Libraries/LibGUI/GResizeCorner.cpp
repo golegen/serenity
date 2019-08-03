@@ -1,14 +1,14 @@
 #include <LibGUI/GPainter.h>
 #include <LibGUI/GResizeCorner.h>
 #include <LibGUI/GWindow.h>
-#include <SharedGraphics/GraphicsBitmap.h>
+#include <LibDraw/GraphicsBitmap.h>
 #include <WindowServer/WSAPITypes.h>
 
 GResizeCorner::GResizeCorner(GWidget* parent)
     : GWidget(parent)
 {
     set_size_policy(SizePolicy::Fixed, SizePolicy::Fixed);
-    set_preferred_size({ 16, 16 });
+    set_preferred_size(16, 16);
     m_bitmap = GraphicsBitmap::load_from_file("/res/icons/resize-corner.png");
     ASSERT(m_bitmap);
 }

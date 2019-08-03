@@ -4,15 +4,15 @@
 
 namespace AK {
 
-inline const LogStream& operator<<(const LogStream& stream, const String& value)
+const LogStream& operator<<(const LogStream& stream, const String& value)
 {
     stream.write(value.characters(), value.length());
     return stream;
 }
 
-inline const LogStream& operator<<(const LogStream& stream, const StringView& value)
+const LogStream& operator<<(const LogStream& stream, const StringView& value)
 {
-    stream.write(value.characters(), value.length());
+    stream.write(value.characters_without_null_termination(), value.length());
     return stream;
 }
 
@@ -29,6 +29,24 @@ const LogStream& operator<<(const LogStream& stream, unsigned value)
 const LogStream& operator<<(const LogStream& stream, const void* value)
 {
     return stream << String::format("%p", value);
+}
+
+const LogStream& operator<<(const LogStream& stream, const TStyle& style)
+{
+    stream << "\033[";
+
+    if (style.color() != TStyle::Color::NoColor)
+        stream << ((int)style.color() + 30) << (style.attributes() ? ";" : "");
+    else
+        stream << '0';
+
+    if (style.attributes() & TStyle::Attribute::Bold)
+        stream << '1';
+
+    stream << 'm';
+
+    stream.m_needs_style_reset = true;
+    return stream;
 }
 
 }

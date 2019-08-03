@@ -1,7 +1,9 @@
 #include "DirectoryView.h"
 #include <AK/FileSystemPath.h>
 #include <LibCore/CUserInfo.h>
+#include <LibDraw/PNGLoader.h>
 #include <LibGUI/GAction.h>
+#include <LibGUI/GActionGroup.h>
 #include <LibGUI/GApplication.h>
 #include <LibGUI/GBoxLayout.h>
 #include <LibGUI/GFileSystemModel.h>
@@ -38,7 +40,6 @@ int main(int argc, char** argv)
     auto* window = new GWindow;
     window->set_title("File Manager");
     window->set_rect(20, 200, 640, 480);
-    window->set_should_exit_event_loop_on_close(true);
 
     auto* widget = new GWidget;
     widget->set_layout(make<GBoxLayout>(Orientation::Vertical));
@@ -47,7 +48,7 @@ int main(int argc, char** argv)
     auto* main_toolbar = new GToolBar(widget);
     auto* location_toolbar = new GToolBar(widget);
     location_toolbar->layout()->set_margins({ 6, 3, 6, 3 });
-    location_toolbar->set_preferred_size({ 0, 25 });
+    location_toolbar->set_preferred_size(0, 25);
 
     auto* location_label = new GLabel("Location: ", location_toolbar);
     location_label->size_to_fit();
@@ -57,9 +58,9 @@ int main(int argc, char** argv)
     auto* splitter = new GSplitter(Orientation::Horizontal, widget);
     auto* tree_view = new GTreeView(splitter);
     auto file_system_model = GFileSystemModel::create("/", GFileSystemModel::Mode::DirectoriesOnly);
-    tree_view->set_model(file_system_model.copy_ref());
+    tree_view->set_model(file_system_model);
     tree_view->set_size_policy(SizePolicy::Fixed, SizePolicy::Fill);
-    tree_view->set_preferred_size({ 200, 0 });
+    tree_view->set_preferred_size(200, 0);
     auto* directory_view = new DirectoryView(splitter);
 
     auto* statusbar = new GStatusBar(widget);
@@ -90,13 +91,13 @@ int main(int argc, char** argv)
     auto mkdir_action = GAction::create("New directory...", GraphicsBitmap::load_from_file("/res/icons/16x16/mkdir.png"), [&](const GAction&) {
         GInputBox input_box("Enter name:", "New directory", window);
         if (input_box.exec() == GInputBox::ExecOK && !input_box.text_value().is_empty()) {
-            auto new_dir_path = FileSystemPath(String::format("%s/%s",
-                                                   directory_view->path().characters(),
-                                                   input_box.text_value().characters()))
-                                    .string();
+            auto new_dir_path = canonicalized_path(
+                String::format("%s/%s",
+                    directory_view->path().characters(),
+                    input_box.text_value().characters()));
             int rc = mkdir(new_dir_path.characters(), 0777);
             if (rc < 0) {
-                GMessageBox::show(String::format("mkdir(\"%s\") failed: %s", new_dir_path.characters(), strerror(errno)), "Error", GMessageBox::Type::Error, window);
+                GMessageBox::show(String::format("mkdir(\"%s\") failed: %s", new_dir_path.characters(), strerror(errno)), "Error", GMessageBox::Type::Error, GMessageBox::InputType::OK, window);
             } else {
                 directory_view->refresh();
             }
@@ -108,18 +109,21 @@ int main(int argc, char** argv)
 
     view_as_table_action = GAction::create("Table view", { Mod_Ctrl, KeyCode::Key_L }, GraphicsBitmap::load_from_file("/res/icons/16x16/table-view.png"), [&](const GAction&) {
         directory_view->set_view_mode(DirectoryView::ViewMode::List);
-        view_as_icons_action->set_checked(false);
         view_as_table_action->set_checked(true);
     });
     view_as_table_action->set_checkable(true);
-    view_as_table_action->set_checked(false);
 
     view_as_icons_action = GAction::create("Icon view", { Mod_Ctrl, KeyCode::Key_I }, GraphicsBitmap::load_from_file("/res/icons/16x16/icon-view.png"), [&](const GAction&) {
         directory_view->set_view_mode(DirectoryView::ViewMode::Icon);
-        view_as_table_action->set_checked(false);
         view_as_icons_action->set_checked(true);
     });
     view_as_icons_action->set_checkable(true);
+
+    auto view_type_action_group = make<GActionGroup>();
+    view_type_action_group->set_exclusive(true);
+    view_type_action_group->add_action(*view_as_table_action);
+    view_type_action_group->add_action(*view_as_icons_action);
+
     view_as_icons_action->set_checked(true);
 
     auto copy_action = GAction::create("Copy", GraphicsBitmap::load_from_file("/res/icons/16x16/edit-copy.png"), [](const GAction&) {
@@ -140,6 +144,10 @@ int main(int argc, char** argv)
         directory_view->open_next_directory();
     });
 
+    auto go_home_action = GAction::create("Go to Home Directory", GraphicsBitmap::load_from_file("/res/icons/16x16/go-home.png"), [directory_view](auto&) {
+        directory_view->open(get_current_user_home_path());
+    });
+
     auto menubar = make<GMenuBar>();
 
     auto app_menu = make<GMenu>("File Manager");
@@ -150,9 +158,9 @@ int main(int argc, char** argv)
     menubar->add_menu(move(app_menu));
 
     auto file_menu = make<GMenu>("File");
-    file_menu->add_action(mkdir_action.copy_ref());
-    file_menu->add_action(copy_action.copy_ref());
-    file_menu->add_action(delete_action.copy_ref());
+    file_menu->add_action(mkdir_action);
+    file_menu->add_action(copy_action);
+    file_menu->add_action(delete_action);
     menubar->add_menu(move(file_menu));
 
     auto view_menu = make<GMenu>("View");
@@ -161,9 +169,9 @@ int main(int argc, char** argv)
     menubar->add_menu(move(view_menu));
 
     auto go_menu = make<GMenu>("Go");
-    go_menu->add_action(go_back_action.copy_ref());
-    go_menu->add_action(go_forward_action.copy_ref());
-    go_menu->add_action(open_parent_directory_action.copy_ref());
+    go_menu->add_action(go_back_action);
+    go_menu->add_action(go_forward_action);
+    go_menu->add_action(open_parent_directory_action);
     menubar->add_menu(move(go_menu));
 
     auto help_menu = make<GMenu>("Help");
@@ -174,14 +182,15 @@ int main(int argc, char** argv)
 
     app.set_menubar(move(menubar));
 
-    main_toolbar->add_action(go_back_action.copy_ref());
-    main_toolbar->add_action(go_forward_action.copy_ref());
-    main_toolbar->add_action(open_parent_directory_action.copy_ref());
+    main_toolbar->add_action(go_back_action);
+    main_toolbar->add_action(go_forward_action);
+    main_toolbar->add_action(open_parent_directory_action);
+    main_toolbar->add_action(go_home_action);
 
     main_toolbar->add_separator();
-    main_toolbar->add_action(mkdir_action.copy_ref());
-    main_toolbar->add_action(copy_action.copy_ref());
-    main_toolbar->add_action(delete_action.copy_ref());
+    main_toolbar->add_action(mkdir_action);
+    main_toolbar->add_action(copy_action);
+    main_toolbar->add_action(delete_action);
 
     main_toolbar->add_separator();
     main_toolbar->add_action(*view_as_icons_action);
@@ -213,13 +222,29 @@ int main(int argc, char** argv)
         progressbar->set_visible(true);
     };
 
-    directory_view->open("/");
+    // our initial location is defined as, in order of precedence:
+    // 1. the first command-line argument (e.g. FileManager /bin)
+    // 2. the user's home directory
+    // 3. the root directory
+
+    String initial_location;
+
+    if (argc >= 2)
+        initial_location = argv[1];
+
+    if (initial_location.is_empty())
+        initial_location = get_current_user_home_path();
+
+    if (initial_location.is_empty())
+        initial_location = "/";
+
+    directory_view->open(initial_location);
     directory_view->set_focus(true);
 
     window->set_main_widget(widget);
     window->show();
 
-    window->set_icon_path("/res/icons/16x16/filetype-folder.png");
+    window->set_icon(load_png("/res/icons/16x16/filetype-folder.png"));
 
     return app.exec();
 }

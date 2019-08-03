@@ -25,34 +25,21 @@
 GlobalState g;
 static LineEditor editor;
 
-static void prompt()
+static String prompt()
 {
     if (g.uid == 0)
-        printf("# ");
-    else {
-        printf("\033]0;%s@%s:%s\007", g.username.characters(), g.hostname, g.cwd.characters());
-        printf("\033[31;1m%s\033[0m@\033[37;1m%s\033[0m:\033[32;1m%s\033[0m$> ", g.username.characters(), g.hostname, g.cwd.characters());
-    }
-    fflush(stdout);
+        return "# ";
+
+    StringBuilder builder;
+    builder.appendf("\033]0;%s@%s:%s\007", g.username.characters(), g.hostname, g.cwd.characters());
+    builder.appendf("\033[31;1m%s\033[0m@\033[37;1m%s\033[0m:\033[32;1m%s\033[0m$> ", g.username.characters(), g.hostname, g.cwd.characters());
+    return builder.to_string();
 }
 
 static int sh_pwd(int, char**)
 {
     printf("%s\n", g.cwd.characters());
     return 0;
-}
-
-static volatile bool g_got_signal = false;
-
-void did_receive_signal(int signum)
-{
-    printf("\nMy word, I've received a signal with number %d\n", signum);
-    g_got_signal = true;
-}
-
-void handle_sigint(int)
-{
-    g.was_interrupted = true;
 }
 
 static int sh_exit(int, char**)
@@ -224,7 +211,7 @@ struct CommandTimer {
 static bool is_glob(const StringView& s)
 {
     for (int i = 0; i < s.length(); i++) {
-        char c = s.characters()[i];
+        char c = s.characters_without_null_termination()[i];
         if (c == '*' || c == '?')
             return true;
     }
@@ -237,7 +224,7 @@ static Vector<StringView> split_path(const StringView &path)
 
     ssize_t substart = 0;
     for (ssize_t i = 0; i < path.length(); i++) {
-        char ch = path.characters()[i];
+        char ch = path.characters_without_null_termination()[i];
         if (ch != '/')
             continue;
         ssize_t sublen = i - substart;
@@ -476,7 +463,10 @@ static int run_command(const String& cmd)
 
             int rc = execvp(argv[0], const_cast<char* const*>(argv.data()));
             if (rc < 0) {
-                fprintf(stderr, "execvp(%s): %s\n", argv[0], strerror(errno));
+                if (errno == ENOENT)
+                    fprintf(stderr, "%s: Command not found.\n", argv[0]);
+                else
+                    fprintf(stderr, "execvp(%s): %s\n", argv[0], strerror(errno));
                 exit(1);
             }
             ASSERT_NOT_REACHED();
@@ -501,7 +491,7 @@ static int run_command(const String& cmd)
     for (int i = 0; i < children.size(); ++i) {
         auto& child = children[i];
         do {
-            int rc = waitpid(child.pid, &wstatus, 0);
+            int rc = waitpid(child.pid, &wstatus, WEXITED | WSTOPPED);
             if (rc < 0 && errno != EINTR) {
                 if (errno != ECHILD)
                     perror("waitpid");
@@ -509,9 +499,11 @@ static int run_command(const String& cmd)
             }
             if (WIFEXITED(wstatus)) {
                 if (WEXITSTATUS(wstatus) != 0)
-                    printf("Shell: %s(%d) exited with status %d\n", child.name.characters(), child.pid, WEXITSTATUS(wstatus));
+                    dbg() << "Shell: " << child.name << ":" << child.pid << " exited with status " << WEXITSTATUS(wstatus);
                 if (i == 0)
                     return_value = WEXITSTATUS(wstatus);
+            } else if (WIFSTOPPED(wstatus)) {
+                printf("Shell: %s(%d) stopped.\n", child.name.characters(), child.pid);
             } else {
                 if (WIFSIGNALED(wstatus)) {
                     printf("Shell: %s(%d) exited due to signal '%s'\n", child.name.characters(), child.pid, strsignal(WTERMSIG(wstatus)));
@@ -561,11 +553,6 @@ void save_history()
     }
 }
 
-void handle_sighup(int)
-{
-    save_history();
-}
-
 int main(int argc, char** argv)
 {
     g.uid = getuid();
@@ -573,23 +560,17 @@ int main(int argc, char** argv)
     tcsetpgrp(0, getpgrp());
     tcgetattr(0, &g.termios);
 
-    {
-        struct sigaction sa;
-        sa.sa_handler = handle_sigint;
-        sa.sa_flags = 0;
-        sa.sa_mask = 0;
-        int rc = sigaction(SIGINT, &sa, nullptr);
-        assert(rc == 0);
-    }
+    signal(SIGINT, [](int) {
+        g.was_interrupted = true;
+    });
 
-    {
-        struct sigaction sa;
-        sa.sa_handler = handle_sighup;
-        sa.sa_flags = 0;
-        sa.sa_mask = 0;
-        int rc = sigaction(SIGHUP, &sa, nullptr);
-        assert(rc == 0);
-    }
+    signal(SIGHUP, [](int) {
+        save_history();
+    });
+
+    signal(SIGWINCH, [](int) {
+        g.was_resized = true;
+    });
 
     int rc = gethostname(g.hostname, sizeof(g.hostname));
     if (rc < 0)
@@ -624,8 +605,7 @@ int main(int argc, char** argv)
     atexit(save_history);
 
     for (;;) {
-        prompt();
-        auto line = editor.get_line();
+        auto line = editor.get_line(prompt());
         if (line.is_empty())
             continue;
         run_command(line);

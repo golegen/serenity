@@ -1,6 +1,7 @@
 #pragma once
 
 #include <AK/HashMap.h>
+#include <LibCore/CNotifier.h>
 #include <LibGUI/GModel.h>
 #include <sys/stat.h>
 
@@ -18,6 +19,7 @@ public:
         Owner,
         Group,
         Permissions,
+        ModificationTime,
         Inode,
         __Count,
     };
@@ -42,6 +44,7 @@ public:
         uid_t uid { 0 };
         uid_t gid { 0 };
         ino_t inode { 0 };
+        time_t mtime { 0 };
         mutable RefPtr<GraphicsBitmap> thumbnail;
         bool is_directory() const { return S_ISDIR(mode); }
         bool is_executable() const { return mode & S_IXUSR; }
@@ -77,4 +80,6 @@ private:
 
     HashMap<uid_t, String> m_user_names;
     HashMap<gid_t, String> m_group_names;
+
+    OwnPtr<CNotifier> m_notifier;
 };

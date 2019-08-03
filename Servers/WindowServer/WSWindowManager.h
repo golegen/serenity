@@ -6,14 +6,14 @@
 #include <AK/WeakPtr.h>
 #include <LibCore/CConfigFile.h>
 #include <LibCore/CElapsedTimer.h>
-#include <SharedGraphics/Color.h>
-#include <SharedGraphics/DisjointRectSet.h>
-#include <SharedGraphics/Painter.h>
-#include <SharedGraphics/Rect.h>
+#include <LibDraw/Color.h>
+#include <LibDraw/DisjointRectSet.h>
+#include <LibDraw/Painter.h>
+#include <LibDraw/Rect.h>
 #include <WindowServer/WSCursor.h>
 #include <WindowServer/WSEvent.h>
 #include <WindowServer/WSMenuBar.h>
-#include <WindowServer/WSMenuBarKeeper.h>
+#include <WindowServer/WSMenuManager.h>
 #include <WindowServer/WSWindow.h>
 #include <WindowServer/WSWindowSwitcher.h>
 #include <WindowServer/WSWindowType.h>
@@ -42,6 +42,8 @@ enum class ResizeDirection {
 };
 
 class WSWindowManager : public CObject {
+    C_OBJECT(WSWindowManager)
+
     friend class WSCompositor;
     friend class WSWindowFrame;
     friend class WSWindowSwitcher;
@@ -67,6 +69,7 @@ public:
 
     WSWindow* active_window() { return m_active_window.ptr(); }
     const WSClientConnection* active_client() const;
+    bool active_window_is_modal() const { return m_active_window && m_active_window->is_modal(); }
 
     WSWindow* highlight_window() { return m_highlight_window.ptr(); }
     void set_highlight_window(WSWindow*);
@@ -150,8 +153,6 @@ private:
     void deliver_mouse_event(WSWindow& window, WSMouseEvent& event);
     bool process_ongoing_window_resize(const WSMouseEvent&, WSWindow*& hovered_window);
     bool process_ongoing_window_drag(WSMouseEvent&, WSWindow*& hovered_window);
-    void handle_menu_mouse_event(WSMenu&, const WSMouseEvent&);
-    void handle_close_button_mouse_event(WSWindow&, const WSMouseEvent&);
     void start_window_drag(WSWindow&, const WSMouseEvent&);
     void handle_client_request(const WSAPIClientRequest&);
     void set_hovered_window(WSWindow*);
@@ -220,6 +221,7 @@ private:
     WeakPtr<WSWindow> m_active_window;
     WeakPtr<WSWindow> m_hovered_window;
     WeakPtr<WSWindow> m_highlight_window;
+    WeakPtr<WSWindow> m_active_input_window;
 
     WeakPtr<WSWindow> m_drag_window;
     Point m_drag_origin;
@@ -240,7 +242,7 @@ private:
     WeakPtr<WSMenu> m_current_menu;
 
     WSWindowSwitcher m_switcher;
-    WSMenuBarKeeper m_menubar_keeper;
+    WSMenuManager m_menu_manager;
 
     WeakPtr<WSButton> m_cursor_tracking_button;
     WeakPtr<WSButton> m_hovered_button;
@@ -276,6 +278,8 @@ IterationDecision WSWindowManager::for_each_visible_window_of_type_from_back_to_
 template<typename Callback>
 IterationDecision WSWindowManager::for_each_visible_window_from_back_to_front(Callback callback)
 {
+    if (for_each_visible_window_of_type_from_back_to_front(WSWindowType::Launcher, callback) == IterationDecision::Break)
+        return IterationDecision::Break;
     if (for_each_visible_window_of_type_from_back_to_front(WSWindowType::Normal, callback) == IterationDecision::Break)
         return IterationDecision::Break;
     if (for_each_visible_window_of_type_from_back_to_front(WSWindowType::Taskbar, callback) == IterationDecision::Break)
@@ -325,7 +329,9 @@ IterationDecision WSWindowManager::for_each_visible_window_from_front_to_back(Ca
         return IterationDecision::Break;
     if (for_each_visible_window_of_type_from_front_to_back(WSWindowType::Tooltip, callback) == IterationDecision::Break)
         return IterationDecision::Break;
-    return for_each_visible_window_of_type_from_front_to_back(WSWindowType::Normal, callback);
+    if (for_each_visible_window_of_type_from_front_to_back(WSWindowType::Normal, callback) == IterationDecision::Break)
+        return IterationDecision::Break;
+    return for_each_visible_window_of_type_from_front_to_back(WSWindowType::Launcher, callback);
 }
 
 template<typename Callback>

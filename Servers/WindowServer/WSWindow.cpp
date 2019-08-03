@@ -22,7 +22,6 @@ WSWindow::WSWindow(CObject& internal_owner, WSWindowType type)
     : m_internal_owner(&internal_owner)
     , m_type(type)
     , m_icon(default_window_icon())
-    , m_icon_path(default_window_icon_path())
     , m_frame(*this)
 {
     WSWindowManager::the().add_window(*this);
@@ -36,7 +35,6 @@ WSWindow::WSWindow(WSClientConnection& client, WSWindowType window_type, int win
     , m_fullscreen(fullscreen)
     , m_window_id(window_id)
     , m_icon(default_window_icon())
-    , m_icon_path(default_window_icon_path())
     , m_frame(*this)
 {
     // FIXME: This should not be hard-coded here.
@@ -140,6 +138,8 @@ static WSAPI_WindowType to_api(WSWindowType ws_type)
         return WSAPI_WindowType::Tooltip;
     case WSWindowType::Menubar:
         return WSAPI_WindowType::Menubar;
+    case WSWindowType::Launcher:
+        return WSAPI_WindowType::Launcher;
     default:
         ASSERT_NOT_REACHED();
     }
@@ -169,7 +169,7 @@ void WSWindow::set_maximized(bool maximized)
         set_rect(m_unmaximized_rect);
     }
     m_frame.did_set_maximized({}, maximized);
-    WSEventLoop::the().post_event(*this, make<WSResizeEvent>(old_rect, m_rect));
+    CEventLoop::current().post_event(*this, make<WSResizeEvent>(old_rect, m_rect));
 }
 
 void WSWindow::event(CEvent& event)
@@ -241,14 +241,20 @@ void WSWindow::event(CEvent& event)
         break;
     }
 
-    case WSEvent::WM_WindowIconChanged: {
-        auto& changed_event = static_cast<const WSWMWindowIconChangedEvent&>(event);
-        server_message.type = WSAPI_ServerMessage::Type::WM_WindowIconChanged;
+    case WSEvent::WM_WindowIconBitmapChanged: {
+        auto& changed_event = static_cast<const WSWMWindowIconBitmapChangedEvent&>(event);
+        server_message.type = WSAPI_ServerMessage::Type::WM_WindowIconBitmapChanged;
         server_message.wm.client_id = changed_event.client_id();
         server_message.wm.window_id = changed_event.window_id();
-        ASSERT(changed_event.icon_path().length() < (int)sizeof(server_message.text));
-        memcpy(server_message.text, changed_event.icon_path().characters(), changed_event.icon_path().length());
-        server_message.text_length = changed_event.icon_path().length();
+        server_message.wm.icon_buffer_id = changed_event.icon_buffer_id();
+        server_message.wm.icon_size = changed_event.icon_size();
+
+        // FIXME: Perhaps we should update the bitmap sharing list somewhere else instead?
+        ASSERT(client());
+        dbg() << "WindowServer: Sharing icon buffer " << changed_event.icon_buffer_id() << " with PID " << client()->client_pid();
+        if (share_buffer_with(changed_event.icon_buffer_id(), client()->client_pid()) < 0) {
+            ASSERT_NOT_REACHED();
+        }
         break;
     }
 
@@ -302,7 +308,6 @@ bool WSWindow::is_blocked_by_modal_window() const
 void WSWindow::set_default_icon()
 {
     m_icon = default_window_icon();
-    m_icon_path = default_window_icon_path();
 }
 
 void WSWindow::request_update(const Rect& rect)
